@@ -3,7 +3,6 @@
 import asyncio
 import calendar
 import logging
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from string import Template
 from typing import Any
@@ -49,41 +48,27 @@ from .const import (
     LOOKBACK_DAYS,
     clean_service_addr,
 )
+from .models import (
+    DominionSCAccountData,
+    DominionSCData,
+    DominionSCStatisticMetadata,
+)
 from .rates import TIERED_RATE_REGISTRY, RateSchedule, calculate_sc_rate_interval_cost
 
 _LOGGER = logging.getLogger(__name__)
 
 type DominionSCConfigEntry = ConfigEntry[DominionSCCoordinator]
 
-
-@dataclass
-class DominionSCStatisticMetadata:
-    """Metadata for creating statistics."""
-
-    account: str
-    consumption_id: str
-    cost_id: str | None
-    name_prefix: Template
-    unit_class: str
-    unit: str
-
-
-@dataclass
-class DominionSCAccountData:
-    """Class to hold DominionSC account-specific data."""
-
-    account: str
-    last_changed: datetime | None
-
-
-@dataclass
-class DominionSCData:
-    """Class to hold all DominionSC shared data and individual accounts."""
-
-    accounts: dict[str, DominionSCAccountData]
-    forecast: Forecast | None
-    service_addr_account_no: str
-    last_updated: datetime
+# Re-exported for backward compatibility. These dataclasses now live in
+# models.py; existing imports of ``from ...coordinator import
+# DominionSCStatisticMetadata`` (etc.) continue to resolve via these names.
+__all__ = [
+    "DominionSCAccountData",
+    "DominionSCConfigEntry",
+    "DominionSCCoordinator",
+    "DominionSCData",
+    "DominionSCStatisticMetadata",
+]
 
 
 # ---------------------------------------------------------------------------

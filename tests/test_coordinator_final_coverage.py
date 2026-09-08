@@ -1,25 +1,20 @@
 """Final coordinator coverage."""
 
+import zoneinfo
 from datetime import date, datetime
-
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest, zoneinfo
-
-from homeassistant.core import HomeAssistant
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
-
+import pytest
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dominionsc.const import (
-    DOMAIN,
     CONF_COST_MODE,
-    COST_MODE_RATE_8,
     COST_MODE_FIXED,
     COST_MODE_NONE,
-    CONF_FIXED_RATE,
+    COST_MODE_RATE_8,
+    DOMAIN,
 )
-
 from custom_components.dominionsc.coordinator import (
     DominionSCCoordinator,
     DominionSCStatisticMetadata,
@@ -37,7 +32,7 @@ def entry():
     )
 
 
-def test_estimate_backward():
+def test_estimate_backward() -> None:
 
     cycles = _estimate_billing_cycles(
         date(2025, 7, 31), date(2025, 7, 31), date(2025, 7, 1)
@@ -46,7 +41,7 @@ def test_estimate_backward():
     assert len(cycles) >= 1
 
 
-def test_estimate_forward():
+def test_estimate_forward() -> None:
 
     cycles = _estimate_billing_cycles(
         date(2025, 7, 1), date(2025, 7, 31), date(2025, 7, 1), latest=date(2025, 8, 15)
@@ -55,7 +50,7 @@ def test_estimate_forward():
     assert any(end > date(2025, 7, 31) for _, end in cycles)
 
 
-def test_find_cycle():
+def test_find_cycle() -> None:
 
     cycles = [(date(2025, 7, 1), date(2025, 7, 31))]
 
@@ -67,7 +62,7 @@ def test_find_cycle():
     assert _find_billing_cycle_for_date(date(2025, 8, 1), cycles) is None
 
 
-async def test_push_cost(hass, entry):
+async def test_push_cost(hass, entry) -> None:
 
     entry.add_to_hass(hass)
 
@@ -81,7 +76,7 @@ async def test_push_cost(hass, entry):
         m.assert_called_once()
 
 
-async def test_backfill(hass, entry):
+async def test_backfill(hass, entry) -> None:
 
     entry.add_to_hass(hass)
 
@@ -105,7 +100,7 @@ async def test_backfill(hass, entry):
         m.assert_awaited_once()
 
 
-async def test_aggregate(hass, entry):
+async def test_aggregate(hass, entry) -> None:
 
     entry.add_to_hass(hass)
 
@@ -130,14 +125,14 @@ async def test_aggregate(hass, entry):
     forecast.start_date = date(2025, 7, 1)
     forecast.end_date = date(2025, 7, 31)
 
-    cons, cost = coord._aggregate_hourly_data(
+    cons, _cost = coord._aggregate_hourly_data(
         [R()], meta, forecast, date(2025, 7, 1), True, existing_hours=set()
     )
 
     assert len(cons) == 1
 
 
-async def test_recalc_lock(hass, entry):
+async def test_recalc_lock(hass, entry) -> None:
 
     entry.add_to_hass(hass)
 
@@ -155,7 +150,7 @@ async def test_recalc_lock(hass, entry):
         m.assert_awaited_once()
 
 
-async def test_recalc_none_skip(hass, entry):
+async def test_recalc_none_skip(hass, entry) -> None:
 
     entry.add_to_hass(hass)
 
@@ -176,6 +171,6 @@ async def test_recalc_none_skip(hass, entry):
         )
 
 
-async def test_process_usage(hass, entry):
+async def test_process_usage(hass, entry) -> None:
     entry.add_to_hass(hass)
-    coord = DominionSCCoordinator(hass, entry)
+    DominionSCCoordinator(hass, entry)

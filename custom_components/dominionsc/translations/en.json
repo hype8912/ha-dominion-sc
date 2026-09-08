@@ -1,168 +1,168 @@
 {
-    "config": {
-        "abort": {
-            "already_configured": "Service is already configured",
-            "reauth_successful": "Re-authentication was successful"
-        },
-        "error": {
-            "cannot_connect": "Failed to connect",
-            "invalid_auth": "Invalid authentication",
-            "invalid_tfa_code": "The security code is incorrect. Please try again.",
-            "unknown": "Unexpected error",
-            "invalid_backfill_selection": "It is required to backfill consumption data if you want to backfill cost data. Please try again."
-        },
-        "step": {
-            "backfill_options": {
-                "data": {
-                    "extended_backfill": "Backfill extra electric and gas consumption data",
-                    "extended_cost_backfill": "Backfill extra electric cost data"
-                },
-                "data_description": {
-                    "extended_backfill": "Load historical electric and gas consumption data for the last 365 days",
-                    "extended_cost_backfill": "Calculate estimated cost of electric data for the last 365 days or the effective date of the chosen rate schedule, whichever is later. Accuracy may vary."
-                },
-                "description": "By default, energy data is backfilled from the start of your current billing cycle. You can optionally load 365 days of historical data.\n\nNOTE: You will not be able to change your decision to do an extended backfill later unless you delete and re-add the integration",
-                "title": "Historical Data"
-            },
-            "cost_mode": {
-                "data": {
-                    "cost_mode": "Cost calculation method"
-                },
-                "data_description": {
-                    "cost_mode": "How to calculate energy costs"
-                },
-                "description": "Select how energy costs are calculated.",
-                "title": "Cost Calculation Settings"
-            },
-            "cost_mode_fixed_rate": {
-                "data": {
-                    "fixed_rate": "Fixed rate ($/kWh)"
-                },
-                "data_description": {
-                    "fixed_rate": "Single rate applied to all kWh consumed"
-                },
-                "description": "Enter the fixed rate applied to all usage.",
-                "title": "Fixed Rate Settings"
-            },
-            "reauth_confirm": {
-                "data": {
-                    "password": "Password",
-                    "username": "Username"
-                },
-                "data_description": {
-                    "password": "The password for your utility account",
-                    "username": "The username for your utility account"
-                },
-                "title": "Authentication expired for {name}"
-            },
-            "tfa_code": {
-                "data": {
-                    "tfa_code": "Security code"
-                },
-                "data_description": {
-                    "tfa_code": "Typically a 6-digit code"
-                },
-                "description": "Please enter the security code below to complete login.",
-                "title": "Enter security code"
-            },
-            "tfa_options": {
-                "data": {
-                    "tfa_method": "TFA method"
-                },
-                "data_description": {
-                    "tfa_method": "How to receive your security code"
-                },
-                "description": "Your account requires two-factor authentication (TFA). Select a method to receive your security code.",
-                "title": "Two-factor authentication"
-            },
-            "user": {
-                "data": {
-                    "password": "Password",
-                    "username": "Username"
-                },
-                "data_description": {
-                    "password": "The password for your utility account",
-                    "username": "The username for your utility account"
-                },
-                "title": "Enter credentials"
-            }
-        }
+  "config": {
+    "abort": {
+      "already_configured": "Service is already configured",
+      "reauth_successful": "Re-authentication was successful"
     },
-    "entity": {
-        "sensor": {
-            "cost_to_date": {
-                "name": "Current bill cost to date"
-            },
-            "end_date": {
-                "name": "Current bill end date"
-            },
-            "forecasted_cost": {
-                "name": "Current bill forecasted cost"
-            },
-            "last_changed": {
-                "name": "{account} Latest Data"
-            },
-            "last_updated": {
-                "name": "Last Polling"
-            },
-            "start_date": {
-                "name": "Current bill start date"
-            },
-            "typical_cost": {
-                "name": "Typical monthly cost"
-            }
-        }
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "invalid_tfa_code": "The security code is incorrect. Please try again.",
+      "unknown": "Unexpected error",
+      "invalid_backfill_selection": "It is required to backfill consumption data if you want to backfill cost data. Please try again."
     },
-    "options": {
-        "error": {
-            "end_before_start": "End date must be on or after the start date.",
-            "end_in_future": "End date cannot be in the future.",
-            "invalid_date_format": "Invalid date format. Please use YYYY-MM-DD (e.g. 2024-01-15).",
-            "recalculation_in_progress": "A historic cost recalculation is currently running. Please wait for it to finish before changing settings."
+    "step": {
+      "backfill_options": {
+        "data": {
+          "extended_backfill": "Backfill extra electric and gas consumption data",
+          "extended_cost_backfill": "Backfill extra electric cost data"
         },
-        "step": {
-            "fixed_rate": {
-                "data": {
-                    "fixed_rate": "Fixed rate ($/kWh)"
-                },
-                "data_description": {
-                    "fixed_rate": "Single rate applied to all kWh consumed"
-                },
-                "description": "Enter the fixed rate applied to all usage.",
-                "title": "Fixed Rate Settings"
-            },
-            "init": {
-                "data": {
-                    "cost_mode": "Cost calculation method"
-                },
-                "data_description": {
-                    "cost_mode": "How to calculate energy costs"
-                },
-                "description": "Select how energy costs are calculated.",
-                "title": "Cost Calculation Settings"
-            },
-            "recalculate_date_range": {
-                "data": {
-                    "recalc_end_date": "End date (YYYY-MM-DD)",
-                    "recalc_start_date": "Start date (YYYY-MM-DD)"
-                },
-                "data_description": {
-                    "recalc_end_date": "The latest date to recalculate (inclusive)",
-                    "recalc_start_date": "The earliest date to recalculate (inclusive)"
-                },
-                "description": "Enter the start and end dates for the historic cost recalculation. Dates must be in YYYY-MM-DD format and cannot be in the future.",
-                "title": "Select Recalculation Date Range"
-            },
-            "recalculate_history": {
-                "data": {
-                    "recalculate_history": "Recalculate historic cost statistics"
-                },
-                "data_description": {
-                    "recalculate_history": "If enabled, you will be asked to choose a date range for the recalculation"
-                },
-                "description": "Your cost calculation method is changing from **{old_mode}** to **{new_mode}**.\n\nExisting cost statistics were calculated using the old method. Would you like to recalculate historic cost records to use the new method?\n\nNOTE:\n- If changing to a rate schedule, cost calculation may not be completely accurate as billing cycles must be estimated\n- Cost calculation will be limited to the effective date of the new rate schedule",
-                "title": "Recalculate Historic Costs?"
-            }
-        }
+        "data_description": {
+          "extended_backfill": "Load historical electric and gas consumption data for the last 365 days",
+          "extended_cost_backfill": "Calculate estimated cost of electric data for the last 365 days or the effective date of the chosen rate schedule, whichever is later. Accuracy may vary."
+        },
+        "description": "By default, energy data is backfilled from the start of your current billing cycle. You can optionally load 365 days of historical data.\n\nNOTE: You will not be able to change your decision to do an extended backfill later unless you delete and re-add the integration",
+        "title": "Historical Data"
+      },
+      "cost_mode": {
+        "data": {
+          "cost_mode": "Cost calculation method"
+        },
+        "data_description": {
+          "cost_mode": "How to calculate energy costs"
+        },
+        "description": "Select how energy costs are calculated.",
+        "title": "Cost Calculation Settings"
+      },
+      "cost_mode_fixed_rate": {
+        "data": {
+          "fixed_rate": "Fixed rate ($/kWh)"
+        },
+        "data_description": {
+          "fixed_rate": "Single rate applied to all kWh consumed"
+        },
+        "description": "Enter the fixed rate applied to all usage.",
+        "title": "Fixed Rate Settings"
+      },
+      "reauth_confirm": {
+        "data": {
+          "password": "Password",
+          "username": "Username"
+        },
+        "data_description": {
+          "password": "The password for your utility account",
+          "username": "The username for your utility account"
+        },
+        "title": "Authentication expired for {name}"
+      },
+      "tfa_code": {
+        "data": {
+          "tfa_code": "Security code"
+        },
+        "data_description": {
+          "tfa_code": "Typically a 6-digit code"
+        },
+        "description": "Please enter the security code below to complete login.",
+        "title": "Enter security code"
+      },
+      "tfa_options": {
+        "data": {
+          "tfa_method": "TFA method"
+        },
+        "data_description": {
+          "tfa_method": "How to receive your security code"
+        },
+        "description": "Your account requires two-factor authentication (TFA). Select a method to receive your security code.",
+        "title": "Two-factor authentication"
+      },
+      "user": {
+        "data": {
+          "password": "Password",
+          "username": "Username"
+        },
+        "data_description": {
+          "password": "The password for your utility account",
+          "username": "The username for your utility account"
+        },
+        "title": "Enter credentials"
+      }
     }
+  },
+  "entity": {
+    "sensor": {
+      "cost_to_date": {
+        "name": "Current bill cost to date"
+      },
+      "end_date": {
+        "name": "Current bill end date"
+      },
+      "forecasted_cost": {
+        "name": "Current bill forecasted cost"
+      },
+      "last_changed": {
+        "name": "{account} Latest Data"
+      },
+      "last_updated": {
+        "name": "Last Polling"
+      },
+      "start_date": {
+        "name": "Current bill start date"
+      },
+      "typical_cost": {
+        "name": "Typical monthly cost"
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "end_before_start": "End date must be on or after the start date.",
+      "end_in_future": "End date cannot be in the future.",
+      "invalid_date_format": "Invalid date format. Please use YYYY-MM-DD (e.g. 2024-01-15).",
+      "recalculation_in_progress": "A historic cost recalculation is currently running. Please wait for it to finish before changing settings."
+    },
+    "step": {
+      "fixed_rate": {
+        "data": {
+          "fixed_rate": "Fixed rate ($/kWh)"
+        },
+        "data_description": {
+          "fixed_rate": "Single rate applied to all kWh consumed"
+        },
+        "description": "Enter the fixed rate applied to all usage.",
+        "title": "Fixed Rate Settings"
+      },
+      "init": {
+        "data": {
+          "cost_mode": "Cost calculation method"
+        },
+        "data_description": {
+          "cost_mode": "How to calculate energy costs"
+        },
+        "description": "Select how energy costs are calculated.",
+        "title": "Cost Calculation Settings"
+      },
+      "recalculate_date_range": {
+        "data": {
+          "recalc_end_date": "End date (YYYY-MM-DD)",
+          "recalc_start_date": "Start date (YYYY-MM-DD)"
+        },
+        "data_description": {
+          "recalc_end_date": "The latest date to recalculate (inclusive)",
+          "recalc_start_date": "The earliest date to recalculate (inclusive)"
+        },
+        "description": "Enter the start and end dates for the historic cost recalculation. Dates must be in YYYY-MM-DD format and cannot be in the future.",
+        "title": "Select Recalculation Date Range"
+      },
+      "recalculate_history": {
+        "data": {
+          "recalculate_history": "Recalculate historic cost statistics"
+        },
+        "data_description": {
+          "recalculate_history": "If enabled, you will be asked to choose a date range for the recalculation"
+        },
+        "description": "Your cost calculation method is changing from **{old_mode}** to **{new_mode}**.\n\nExisting cost statistics were calculated using the old method. Would you like to recalculate historic cost records to use the new method?\n\nNOTE:\n- If changing to a rate schedule, cost calculation may not be completely accurate as billing cycles must be estimated\n- Cost calculation will be limited to the effective date of the new rate schedule",
+        "title": "Recalculate Historic Costs?"
+      }
+    }
+  }
 }

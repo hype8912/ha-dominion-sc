@@ -1,14 +1,15 @@
 """Chunk 2 tests for coordinator: cost calc + billing gap."""
 
 from datetime import date, datetime
+
 from custom_components.dominionsc.const import (
-    COST_MODE_NONE,
     COST_MODE_FIXED,
+    COST_MODE_NONE,
     COST_MODE_RATE_8,
 )
 from custom_components.dominionsc.coordinator import (
-    _calculate_cost_for_wh,
     _billing_cycle_get_gap,
+    _calculate_cost_for_wh,
 )
 from custom_components.dominionsc.rates import SC_RATE_8
 

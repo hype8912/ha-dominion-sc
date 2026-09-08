@@ -1,10 +1,19 @@
 """Tests for dominionsc sensor."""
+
 from unittest.mock import MagicMock
+
 import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dominionsc.const import DOMAIN
-from custom_components.dominionsc.sensor import ACCOUNT_SENSORS, BILLING_SENSORS, DominionSCSensor, async_setup_entry
+from custom_components.dominionsc.sensor import (
+    ACCOUNT_SENSORS,
+    BILLING_SENSORS,
+    DominionSCSensor,
+    async_setup_entry,
+)
+
 
 @pytest.fixture
 def mock_coordinator() -> MagicMock:
@@ -22,7 +31,10 @@ def mock_coordinator() -> MagicMock:
     coord.data.forecast.end_date = "2025-02-01"
     return coord
 
-async def test_async_setup_entry_with_forecast(hass: HomeAssistant, mock_coordinator: MagicMock) -> None:
+
+async def test_async_setup_entry_with_forecast(
+    hass: HomeAssistant, mock_coordinator: MagicMock
+) -> None:
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
     entry.runtime_data = mock_coordinator
@@ -31,6 +43,7 @@ async def test_async_setup_entry_with_forecast(hass: HomeAssistant, mock_coordin
     mock_add.assert_called_once()
     args = mock_add.call_args[0][0]
     assert len(args) > 0
+
 
 async def test_async_setup_entry_no_forecast(hass: HomeAssistant) -> None:
     coord = MagicMock()
@@ -47,6 +60,7 @@ async def test_async_setup_entry_no_forecast(hass: HomeAssistant) -> None:
     await async_setup_entry(hass, entry, mock_add)
     mock_add.assert_called_once()
 
+
 def test_dominionsc_sensor_account() -> None:
     coord = MagicMock()
     account_data = MagicMock()
@@ -59,6 +73,7 @@ def test_dominionsc_sensor_account() -> None:
     assert sensor.account == "electric"
     assert sensor.native_value == "2025-01-01"
 
+
 def test_dominionsc_sensor_billing() -> None:
     coord = MagicMock()
     coord.data = MagicMock()
@@ -69,4 +84,3 @@ def test_dominionsc_sensor_billing() -> None:
     sensor = DominionSCSensor(coord, desc, "billing", device, "dev_1")
     assert sensor.account == "billing"
     assert sensor.native_value == 99.99
-

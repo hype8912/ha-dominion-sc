@@ -1,26 +1,24 @@
 """Remaining coordinator coverage -- rapid baby steps."""
 
 from datetime import date, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dominionsc.const import (
-    DOMAIN,
     CONF_COST_MODE,
-    COST_MODE_RATE_8,
     COST_MODE_NONE,
-    COST_MODE_FIXED,
+    COST_MODE_RATE_8,
+    DOMAIN,
 )
 from custom_components.dominionsc.coordinator import (
-    _calculate_cost_for_wh,
-    _billing_cycle_get_gap,
     DominionSCCoordinator,
-    DominionSCData,
+    _billing_cycle_get_gap,
+    _calculate_cost_for_wh,
 )
-from custom_components.dominionsc.rates import SC_RATE_8
-from custom_components.dominionsc.const import CONF_FIXED_RATE
 
 
 # Small branch misses 166, 191 (cost calc default, gap default)
@@ -39,7 +37,7 @@ def test_gap_default_feb() -> None:
 
 # Update error branches 317-324, 331-336
 class TestUpdateErrors:
-    async def test_async_update_auth_failed(self, hass: HomeAssistant):
+    async def test_async_update_auth_failed(self, hass: HomeAssistant) -> None:
         entry = MockConfigEntry(
             domain=DOMAIN,
             data={
@@ -59,7 +57,9 @@ class TestUpdateErrors:
         with pytest.raises(ConfigEntryAuthFailed):
             await coord._async_update_data()
 
-    async def test_async_update_forecast_cannot_connect(self, hass: HomeAssistant):
+    async def test_async_update_forecast_cannot_connect(
+        self, hass: HomeAssistant
+    ) -> None:
         entry = MockConfigEntry(
             domain=DOMAIN,
             data={
@@ -84,7 +84,7 @@ class TestUpdateErrors:
 
 # Forecast / usage projection 403-495 (contract: forecast drives billing cycles)
 class TestForecastUsage:
-    def test_forecast_dates_for_cycle_estimation(self):
+    def test_forecast_dates_for_cycle_estimation(self) -> None:
         from custom_components.dominionsc.coordinator import _estimate_billing_cycles
 
         cycles = _estimate_billing_cycles(
@@ -96,9 +96,10 @@ class TestForecastUsage:
 
 # Statistics insertion / usage loop 557-824 (contract: error parsing, accumulation)
 class TestStatsUsage:
-    def test_stat_metadata_build(self):
-        from custom_components.dominionsc.coordinator import DominionSCStatisticMetadata
+    def test_stat_metadata_build(self) -> None:
         from string import Template
+
+        from custom_components.dominionsc.coordinator import DominionSCStatisticMetadata
 
         m = DominionSCStatisticMetadata(
             account="ELECTRIC",

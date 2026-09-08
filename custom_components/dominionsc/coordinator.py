@@ -8,6 +8,12 @@ from datetime import date, datetime, timedelta
 from string import Template
 from typing import Any
 
+from dominionsc import (
+    DominionSC,
+    Forecast,
+    create_cookie_jar,
+)
+from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -27,13 +33,6 @@ from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
-
-from dominionsc import (
-    DominionSC,
-    Forecast,
-    create_cookie_jar,
-)
-from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
 
 from .const import (
     CONF_COST_MODE,
@@ -199,6 +198,7 @@ def _estimate_billing_cycles(
 ) -> list[tuple[date, date]]:
     """
     Estimate billing cycle intervals given one known (current) billing cycle.
+
     NOTE: this is a temporary algorithm.
 
     Args:
@@ -294,7 +294,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         @callback
         def _dummy_listener() -> None:
-            pass
+            """Keep the coordinator polling even when no entities are registered."""
 
         # Force the coordinator to periodically update by registering at least one
         # listener. Needed when the _async_update_data below returns {} for utilities
@@ -838,6 +838,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
     ) -> None:
         """
         Process usage data and insert statistics.
+
         Common logic for backfill and updates.
 
         When ``existing_hours`` is provided (incremental updates with lookback),
@@ -1041,6 +1042,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         tz = await dt_util.async_get_time_zone(self.api.get_timezone())
 
         def _to_dt(d: date) -> datetime:
+            """Convert a local calendar date to the recorder query timezone."""
             return datetime.combine(d, datetime.min.time()).replace(tzinfo=tz)
 
         window_start = _to_dt(start_date)

@@ -2,22 +2,22 @@
 
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
-from custom_components.dominionsc.const import DOMAIN, COST_MODE_RATE_8, CONF_COST_MODE
+
+from custom_components.dominionsc.const import CONF_COST_MODE, COST_MODE_RATE_8, DOMAIN
 from custom_components.dominionsc.coordinator import (
     DominionSCCoordinator,
     DominionSCData,
-    DominionSCAccountData,
 )
-from custom_components.dominionsc.const import COST_MODE_RATE_8
 
 
 @pytest.fixture
 def mock_config_entry() -> MockConfigEntry:
-    entry = MockConfigEntry(
+    return MockConfigEntry(
         domain=DOMAIN,
         data={
             CONF_USERNAME: "test",
@@ -25,7 +25,6 @@ def mock_config_entry() -> MockConfigEntry:
             CONF_COST_MODE: COST_MODE_RATE_8,
         },
     )
-    return entry
 
 
 async def test_coordinator_init(

@@ -2,17 +2,19 @@
 
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
-from custom_components.dominionsc.const import DOMAIN, COST_MODE_FIXED, CONF_COST_MODE
+
+from custom_components.dominionsc.const import CONF_COST_MODE, COST_MODE_FIXED, DOMAIN
 from custom_components.dominionsc.coordinator import (
     DominionSCCoordinator,
     _billing_cycle_get_gap,
     _estimate_billing_cycles,
 )
-from dominionsc.exceptions import InvalidAuth, CannotConnect, ApiException
 
 
 def test_billing_gap_near_leap_april() -> None:

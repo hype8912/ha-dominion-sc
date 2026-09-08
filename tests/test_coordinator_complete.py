@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -30,7 +31,6 @@ from custom_components.dominionsc.coordinator import (
     _find_billing_cycle_for_date,
 )
 from custom_components.dominionsc.rates import SC_RATE_8
-from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
 
 
 @pytest.fixture
@@ -88,7 +88,7 @@ def test_cost_and_cycle_edge_cases() -> None:
 
 
 @pytest.mark.parametrize(
-    "exc, expected",
+    ("exc", "expected"),
     [
         (InvalidAuth("bad"), ConfigEntryAuthFailed),
         (MfaChallenge("mfa", MagicMock()), ConfigEntryAuthFailed),
@@ -170,15 +170,20 @@ def test_aggregate_all_paths(coordinator: DominionSCCoordinator) -> None:
     forecast = SimpleNamespace(
         start_date=date.today() - timedelta(days=2), end_date=date.today()
     )
-    read = lambda when, consumption: SimpleNamespace(
-        start_time=when, end_time=when + timedelta(hours=1), consumption=consumption
-    )
+
+    def read(when, consumption):
+        """Build the minimal usage-read object consumed by aggregation tests."""
+        return SimpleNamespace(
+            start_time=when, end_time=when + timedelta(hours=1), consumption=consumption
+        )
+
     first = datetime.now().replace(minute=15, second=0, microsecond=0)
     rows = [read(first, 100), read(first + timedelta(minutes=20), 50)]
     cons, costs = coordinator._aggregate_hourly_data(
         rows, metadata(), forecast, first.date(), True
     )
-    assert len(cons) == 1 and costs
+    assert len(cons) == 1
+    assert costs
     coordinator.config_entry._options = {
         CONF_COST_MODE: COST_MODE_FIXED,
         CONF_FIXED_RATE: 0.2,
@@ -191,7 +196,8 @@ def test_aggregate_all_paths(coordinator: DominionSCCoordinator) -> None:
         True,
         cost_start_date=first.date() + timedelta(days=1),
     )
-    assert cons and not any(costs.values())
+    assert cons
+    assert not any(costs.values())
     existing = {first.replace(minute=0)}
     assert coordinator._aggregate_hourly_data(
         rows, metadata(), forecast, first.date(), True, existing_hours=existing
@@ -399,10 +405,6 @@ async def test_recalculate_fixed_success(coordinator: DominionSCCoordinator) -> 
             start, end, {CONF_COST_MODE: COST_MODE_FIXED, CONF_FIXED_RATE: 0.2}
         )
     push.assert_called_once()
-
-
-def test_billing_gap_fallback_branch() -> None:
-    assert _billing_cycle_get_gap(SimpleNamespace(month=13, year=2025)) == 30
 
 
 async def test_backfill_extended_cost_window(
@@ -679,7 +681,8 @@ async def test_aggregate_fixed_cost_path_with_rows(
     consumption, costs = coordinator._aggregate_hourly_data(
         [read], metadata(), forecast, when.date(), True
     )
-    assert consumption and costs
+    assert consumption
+    assert costs
 
 
 async def test_process_empty_output_without_last_stat(

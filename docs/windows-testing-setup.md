@@ -129,8 +129,10 @@ Create a minimal stub module `.venv\Lib\site-packages\resource.py`:
 ```python
 RLIMIT_NOFILE = 7
 
+
 def getrlimit(resource):
     return (4096, 4096)
+
 
 def setrlimit(resource, limits):
     pass
@@ -232,8 +234,8 @@ Modern setuptools implements editable namespace packages by injecting a **fake
 placeholder path** into the namespace package's `__path__`:
 
 ```python
-NAMESPACES = {'custom_components': ['C:\\...\\custom_components']}
-PATH_PLACEHOLDER = '__editable__.ha_dominion_sc-0.0.7.finder' + ".__path_hook__"
+NAMESPACES = {"custom_components": ["C:\\...\\custom_components"]}
+PATH_PLACEHOLDER = "__editable__.ha_dominion_sc-0.0.7.finder" + ".__path_hook__"
 # __path__ ends up as [<real dir>, <PATH_PLACEHOLDER>]
 ```
 

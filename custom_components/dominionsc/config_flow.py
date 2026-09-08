@@ -8,6 +8,15 @@ from datetime import date
 from typing import Any
 
 import voluptuous as vol
+from dominionsc import (
+    ApiException,
+    CannotConnect,
+    DominionSC,
+    DominionSCTFAHandler,
+    InvalidAuth,
+    MfaChallenge,
+    create_cookie_jar,
+)
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     ConfigEntry,
@@ -19,16 +28,6 @@ from homeassistant.const import CONF_NAME, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.typing import VolDictType
-
-from dominionsc import (
-    ApiException,
-    CannotConnect,
-    DominionSC,
-    DominionSCTFAHandler,
-    InvalidAuth,
-    MfaChallenge,
-    create_cookie_jar,
-)
 
 from .const import (
     COMMON_NAME,

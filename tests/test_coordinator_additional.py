@@ -4,6 +4,10 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from dominionsc.exceptions import ApiException
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dominionsc.const import (
     CONF_COST_MODE,
     COST_MODE_FIXED,
@@ -14,9 +18,6 @@ from custom_components.dominionsc.coordinator import (
     DominionSCCoordinator,
     DominionSCStatisticMetadata,
 )
-from dominionsc.exceptions import ApiException
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 
 def _make(hass, options=None):
@@ -39,7 +40,7 @@ def _make(hass, options=None):
         return DominionSCCoordinator(hass, entry)
 
 
-def test_listener_and_extended_backfill(hass):
+def test_listener_and_extended_backfill(hass) -> None:
     coordinator = _make(
         hass,
         {
@@ -52,7 +53,7 @@ def test_listener_and_extended_backfill(hass):
     assert next(iter(coordinator._listeners)) is not None
 
 
-async def test_update_success_and_missing_changed(hass):
+async def test_update_success_and_missing_changed(hass) -> None:
     coordinator = _make(hass)
     coordinator.api.async_login = AsyncMock()
     coordinator.api.async_get_accounts = AsyncMock(
@@ -73,7 +74,7 @@ async def test_update_success_and_missing_changed(hass):
     assert result.accounts["GAS"].last_changed is None
 
 
-async def test_process_api_error_and_empty_with_changed(hass):
+async def test_process_api_error_and_empty_with_changed(hass) -> None:
     coordinator = _make(hass)
     coordinator.api.get_timezone = MagicMock(return_value="UTC")
     forecast = SimpleNamespace(
@@ -110,7 +111,7 @@ async def test_process_api_error_and_empty_with_changed(hass):
     assert "ELECTRIC" in changed
 
 
-async def test_update_datetime_and_stale_paths(hass):
+async def test_update_datetime_and_stale_paths(hass) -> None:
     coordinator = _make(hass)
     coordinator.api.get_timezone = MagicMock(return_value="UTC")
     forecast = SimpleNamespace(start_date=date.today() - timedelta(days=2))
@@ -134,7 +135,7 @@ async def test_update_datetime_and_stale_paths(hass):
     process.assert_awaited()
 
 
-def test_empty_aggregate(hass):
+def test_empty_aggregate(hass) -> None:
     coordinator = _make(hass)
     forecast = SimpleNamespace(start_date=date.today(), end_date=date.today())
     assert coordinator._aggregate_hourly_data(

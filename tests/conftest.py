@@ -1,15 +1,35 @@
 """Fixtures for Dominion Energy SC tests."""
 
+import sys
 from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_socket
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
 from custom_components.dominionsc.const import CONF_LOGIN_DATA
 
 pytest_plugins = "pytest_homeassistant_custom_component"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup() -> None:
+    """
+    Keep sockets enabled on Windows so the asyncio event loop can start.
+
+    pytest-homeassistant-custom-component disables sockets during setup with
+    ``allow_unix_socket=True``. On Linux the ProactorEventLoop self-pipe uses an
+    AF_UNIX socketpair (allowed), but on Windows the ProactorEventLoop falls back
+    to an AF_INET socketpair, which pytest_socket blocks. Neutralizing
+    ``disable_socket`` on Windows lets the session-scoped event-loop runner
+    fixture create its self-pipe. This runs ``tryfirst`` so the patch is in place
+    before the plugin's own setup hook executes.
+    """
+    if sys.platform == "win32":
+        pytest_socket.disable_socket = lambda *args, **kwargs: None  # type: ignore[assignment]
+        pytest_socket.enable_socket()
 
 
 @pytest.fixture(autouse=True)

@@ -1,10 +1,8 @@
 """Coordinator to handle dominionsc connections."""
 
 import asyncio
-import calendar
 import logging
 from datetime import date, datetime, timedelta
-from string import Template
 from typing import Any
 
 from dominionsc import (
@@ -33,215 +31,58 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
 
+from .billing import (
+    _billing_cycle_get_gap,
+    _estimate_billing_cycles,
+    _find_billing_cycle_for_date,
+)
 from .const import (
-    CONF_COST_MODE,
     CONF_EXTENDED_BACKFILL,
     CONF_EXTENDED_COST_BACKFILL,
-    CONF_FIXED_RATE,
     CONF_LOGIN_DATA,
-    COST_MODE_FIXED,
     COST_MODE_NONE,
-    COST_MODE_RATE_8,
-    DEFAULT_FIXED_RATE,
     DOMAIN,
     EXTENDED_BACKFILL_DAYS,
     LOOKBACK_DAYS,
-    clean_service_addr,
 )
+from .cost import _calculate_cost_for_wh, _resolve_cost_config
 from .models import (
     DominionSCAccountData,
     DominionSCData,
     DominionSCStatisticMetadata,
 )
-from .rates import TIERED_RATE_REGISTRY, RateSchedule, calculate_sc_rate_interval_cost
+from .rates import TIERED_RATE_REGISTRY
+from .statistics_ids import _build_statistic_ids
 
 _LOGGER = logging.getLogger(__name__)
 
 type DominionSCConfigEntry = ConfigEntry[DominionSCCoordinator]
 
-# Re-exported for backward compatibility. These dataclasses now live in
-# models.py; existing imports of ``from ...coordinator import
-# DominionSCStatisticMetadata`` (etc.) continue to resolve via these names.
+# Re-exported for backward compatibility. The dataclasses now live in
+# models.py, the pure cost helpers in cost.py, the billing-cycle helpers in
+# billing.py, and statistic-id construction in statistics_ids.py; existing
+# imports of ``from ...coordinator import <name>`` continue to resolve via
+# these re-exports. See docs/REFACTOR_PLAN.md Phase 2.
 __all__ = [
     "DominionSCAccountData",
     "DominionSCConfigEntry",
     "DominionSCCoordinator",
     "DominionSCData",
     "DominionSCStatisticMetadata",
+    "_billing_cycle_get_gap",
+    "_build_statistic_ids",
+    "_calculate_cost_for_wh",
+    "_estimate_billing_cycles",
+    "_find_billing_cycle_for_date",
+    "_resolve_cost_config",
 ]
 
 
 # ---------------------------------------------------------------------------
-# Module-level helpers
+# The pure helpers (statistic-id / cost / billing-cycle construction) that
+# previously lived here now live in statistics_ids.py, cost.py, and billing.py
+# respectively, and are re-exported above for backward compatibility.
 # ---------------------------------------------------------------------------
-
-
-def _build_statistic_ids(
-    service_addr_account_no: str,
-    account: str,
-) -> tuple[str, str | None, Template]:
-    """
-    Construct the statistic IDs and name prefix for a given account.
-
-    Returns:
-        (consumption_statistic_id, cost_statistic_id, name_prefix)
-        ``cost_statistic_id`` is ``None`` for non-ELECTRIC accounts.
-
-    """
-    clean_addr = clean_service_addr(service_addr_account_no)
-    id_prefix = (f"{clean_addr}_{account}").lower().replace("-", "_")
-    consumption_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
-    cost_id = f"{DOMAIN}:{id_prefix}_energy_cost" if account == "ELECTRIC" else None
-    name_prefix = Template(f"{account.title()} $stat_type {service_addr_account_no}")
-    return consumption_id, cost_id, name_prefix
-
-
-def _resolve_cost_config(
-    options: dict[str, Any],
-) -> tuple[str, float, RateSchedule | None]:
-    """Return (cost_mode, fixed_rate, rate_schedule) with consistent defaults."""
-    cost_mode = options.get(CONF_COST_MODE, COST_MODE_RATE_8)
-    fixed_rate: float = options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE)
-    rate_schedule: RateSchedule | None = TIERED_RATE_REGISTRY.get(cost_mode)
-    return cost_mode, fixed_rate, rate_schedule
-
-
-def _calculate_cost_for_wh(
-    interval_wh: float,
-    interval_dt: datetime,
-    cumulative_wh_before: float,
-    cost_mode: str,
-    fixed_rate: float,
-    rate_schedule: RateSchedule | None,
-) -> float:
-    """
-    Calculate the cost for a single Wh interval under the given cost mode.
-
-    Args:
-        interval_wh:          Wh consumed in this interval.
-        interval_dt:          Timestamp of the interval (used for season).
-        cumulative_wh_before: Total Wh consumed before this interval in the
-                              billing period (used for tier boundary tracking).
-        cost_mode:            One of the COST_MODE_* constants.
-        fixed_rate:           $/kWh fixed rate (only used when cost_mode is FIXED).
-        rate_schedule:        RateSchedule instance (only used for tiered modes).
-                              Pass ``None`` to produce 0.0 cost (e.g. outside the
-                              billing period for tiered rates).
-
-    Returns:
-        Cost in dollars for this interval.
-
-    """
-    if cost_mode == COST_MODE_NONE:
-        return 0.0
-    if cost_mode == COST_MODE_FIXED:
-        return interval_wh * (fixed_rate / 1000)
-    if rate_schedule is not None:
-        # Skip intervals that predate the rate schedule's effective date
-        # so extended backfills don't apply current rates to old data.
-        if interval_dt.date() < rate_schedule.effective_date:
-            return 0.0
-        return calculate_sc_rate_interval_cost(
-            interval_wh,
-            interval_dt,
-            cumulative_wh_before,
-            rate_schedule,
-        )
-    return 0.0
-
-
-def _billing_cycle_get_gap(d: date) -> int:
-    """Return billing cycle gap for provided start date."""
-    gaps = {
-        1: 30,
-        2: 31,
-        3: 30,
-        5: 30,
-        7: 30,
-        8: 31,
-        9: 31,
-        10: 30,
-        11: 31,
-        12: 30,
-    }
-    m = d.month
-    if m in gaps:
-        return gaps[m]
-    near_leap = calendar.isleap(d.year) or calendar.isleap(d.year + 1)
-    if m == 4:
-        return 31 if near_leap else 30
-    if m == 6:
-        return 30 if near_leap else 31
-    return 30
-
-
-def _estimate_billing_cycles(
-    anchor_start: date,
-    anchor_end: date,
-    earliest: date,
-    latest: date | None = None,
-) -> list[tuple[date, date]]:
-    """
-    Estimate billing cycle intervals given one known (current) billing cycle.
-
-    NOTE: this is a temporary algorithm.
-
-    Args:
-        anchor_start: Start date of the known (current) billing cycle.
-        anchor_end:   End date of the known (current) billing cycle.
-        earliest:     Generate cycles back to (at least) this date.
-        latest:       If provided, generate cycles forward to (at least)
-                      this date.  This handles the case where the forecast
-                      billing cycle hasn't been updated yet and today is
-                      past the anchor end date.
-
-    Returns:
-        List of (start_date, end_date) tuples, ordered oldest-first.
-
-    """
-    # --- walk backward from the anchor to *earliest* ---
-    starts: list[date] = [anchor_start]
-    cur = anchor_start
-    while cur > earliest:
-        prev_month = cur.month - 1 or 12
-        prev_year = cur.year - (1 if cur.month == 1 else 0)
-        cur -= timedelta(days=_billing_cycle_get_gap(date(prev_year, prev_month, 1)))
-        starts.append(cur)
-    starts.reverse()
-
-    # --- build (start, end) pairs; end = next_start - 1 ---
-    cycles = [
-        (starts[i], starts[i + 1] - timedelta(days=1)) for i in range(len(starts) - 1)
-    ]
-    cycles.append((anchor_start, anchor_end))
-
-    # --- walk forward past the anchor if *latest* is beyond the anchor end ---
-    if latest is not None and latest > anchor_end:
-        _LOGGER.debug(
-            "Forecast billing cycle (%s - %s) is stale; projecting forward to cover %s",
-            anchor_start,
-            anchor_end,
-            latest,
-        )
-        cur = anchor_end + timedelta(days=1)  # next cycle starts day after anchor ends
-        while cur <= latest:
-            gap = _billing_cycle_get_gap(cur)
-            cycle_end = cur + timedelta(days=gap - 1)
-            cycles.append((cur, cycle_end))
-            cur = cycle_end + timedelta(days=1)
-
-    return cycles
-
-
-def _find_billing_cycle_for_date(
-    target: date,
-    billing_cycles: list[tuple[date, date]],
-) -> tuple[date, date] | None:
-    """Return the billing cycle that contains *target*, or ``None``."""
-    for start, end in billing_cycles:
-        if start <= target <= end:
-            return (start, end)
-    return None
 
 
 class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):

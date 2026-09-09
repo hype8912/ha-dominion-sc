@@ -27,6 +27,13 @@ class DominionSCStatisticMetadata:
     name_prefix: Template
     unit_class: str
     unit: str
+    usage_point_id: str | None = None
+    """ESPI UsagePoint id identifying which physical meter register this
+    statistic tracks. ``None`` means "all registers merged" (the legacy,
+    pre-register-aware behaviour, retained for backward compatibility).
+    A net-metered solar account has one metadata per register (grid delivery,
+    solar export), each with its own id. See docs/REFACTOR_PLAN.md Phase 5.
+    """
 
 
 @dataclass

@@ -1,6 +1,6 @@
 # Refactor Plan — `ha-dominion-sc`
 
-**Status:** Phases 0–3 complete (2026-09-08); Phases 4–5 not started
+**Status:** Phases 0–3 complete (2026-09-08); Phase 4 deferred (optional/cosmetic); Phase 5 not started
 **Written against:** `origin/main` @ `113b22b` (the state reset to your fork,
 which includes the AI-generated 100%-coverage test suite).
 **Test baseline:** 143 tests passing, **100% line and branch coverage**
@@ -214,12 +214,17 @@ preserved behavior exactly. `coordinator.py` 329 → 298 stmts.
 > is already met at 298 statements. The recorder-I/O methods remaining on the
 > coordinator is a deliberate design choice, not unfinished work.
 
-### Phase 4 — Tidy the tests *(optional, do after the moves settle)*
+### Phase 4 — Tidy the tests *(optional, deferred)*
 
 Once code has stopped moving, the 8 fragmented `test_coordinator_*` files can
 be consolidated and re-pointed at the new module locations, so future readers
 aren't misled by the chunk/coverage naming. This is cosmetic and can be skipped
 if time-constrained — the shims keep everything working regardless.
+
+**Status:** Deferred (2026-09-08). The 8 test files remain with their original
+names (`test_coordinator_chunk1/2/3`, `_coverage`, `_remaining`, `_final_coverage`,
+`_complete`, etc.). No consolidation performed; shims ensure all imports resolve
+correctly and all 143 tests pass with 100% coverage.
 
 ### Phase 5 — Register-aware entities *(the feature phase; needs the library)*
 

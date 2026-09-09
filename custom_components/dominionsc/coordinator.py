@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from string import Template
 from typing import Any
 
 from dominionsc import (
@@ -11,6 +12,7 @@ from dominionsc import (
     create_cookie_jar,
 )
 from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
+from dominionsc.models.register_reads import RegisterReads
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -53,7 +55,7 @@ from .models import (
     DominionSCStatisticMetadata,
 )
 from .rates import TIERED_RATE_REGISTRY
-from .statistics_ids import _build_statistic_ids
+from .statistics_ids import _build_register_statistic_ids, _build_statistic_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,6 +73,7 @@ __all__ = [
     "DominionSCData",
     "DominionSCStatisticMetadata",
     "_billing_cycle_get_gap",
+    "_build_register_statistic_ids",
     "_build_statistic_ids",
     "_calculate_cost_for_wh",
     "_estimate_billing_cycles",
@@ -220,104 +223,236 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         )
         async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
 
+    async def _discover_registers(self, account: str) -> list[RegisterReads]:
+        """
+        Determine how many physical meter registers exist for this account.
+
+        Uses a short lookback window purely to count registers -- e.g. a
+        net-metered solar ELECTRIC account reports two: grid delivery and
+        solar export (see docs/REFACTOR_PLAN.md Phase 5). On any failure or
+        empty result, returns an empty list so the caller falls back to the
+        legacy single-statistic path, which is the safe default when the
+        register count can't be determined.
+        """
+        today = date.today()
+        end_date = today - timedelta(days=1)
+        start_date = end_date - timedelta(days=LOOKBACK_DAYS)
+        tz = await dt_util.async_get_time_zone(self.api.get_timezone())
+        start = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=tz)
+        end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=tz)
+        try:
+            return await self.api.async_get_register_reads(account, start, end)
+        except (CannotConnect, ApiException) as err:
+            _LOGGER.debug(
+                "Register discovery failed for %s, falling back to legacy path: %s",
+                account,
+                err,
+            )
+            return []
+
+    async def _process_account(
+        self,
+        account: str,
+        usage_point_id: str | None,
+        consumption_statistic_id: str,
+        cost_statistic_id: str | None,
+        name_prefix: Template,
+        last_changed_per_account: dict[str, datetime],
+        forecast: Forecast | None,
+    ) -> None:
+        """
+        Resolve backfill-vs-update state for one statistic id and dispatch.
+
+        Shared by both the sole-register (legacy) and multi-register paths in
+        ``_insert_statistics`` so the backfill/update decision logic exists in
+        exactly one place. ``usage_point_id`` is ``None`` for the legacy,
+        merged-register case; set for a specific meter register.
+        """
+        # Only track cost for electric accounts when a cost mode is active.
+        cost_mode, _, _ = _resolve_cost_config(self.config_entry.options)
+        if account != "ELECTRIC" or cost_mode == COST_MODE_NONE:
+            cost_statistic_id = None
+
+        _LOGGER.debug("Updating Statistics for %s", consumption_statistic_id)
+
+        consumption_unit_class = (
+            EnergyConverter.UNIT_CLASS
+            if account == "ELECTRIC"
+            else VolumeConverter.UNIT_CLASS
+        )
+        consumption_unit = (
+            UnitOfEnergy.WATT_HOUR
+            if account == "ELECTRIC"
+            else UnitOfVolume.CUBIC_FEET
+        )
+
+        # Check if we have existing statistics
+        last_stat = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics,
+            self.hass,
+            1,
+            consumption_statistic_id,
+            True,
+            {"sum"},
+        )
+
+        consumption_exists = bool(last_stat.get(consumption_statistic_id))
+
+        # Also check for cost statistics (for electric accounts)
+        last_cost_stat = {}
+        if cost_statistic_id:
+            last_cost_stat = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, cost_statistic_id, True, {"sum"}
+            )
+
+        # Backfill-initiated tracking key: widened for a specific register so
+        # two registers under the same measurement type (e.g. grid + solar,
+        # both "ELECTRIC") don't share one flag. Unchanged (bare account) for
+        # the legacy/sole-register case.
+        backfill_key = f"{account}:{usage_point_id}" if usage_point_id else account
+
+        if not consumption_exists:
+            # No statistics - perform initial backfill
+            if self._backfill_initiated.get(backfill_key, False):
+                # Backfill was already started, waiting for recorder to commit
+                _LOGGER.debug(
+                    "Backfill already initiated for %s, "
+                    "waiting for recorder to commit",
+                    consumption_statistic_id,
+                )
+                return
+
+            _LOGGER.info(
+                "First statistics update for %s - "
+                "backfilling since last billing cycle.",
+                consumption_statistic_id,
+            )
+            self._backfill_initiated[backfill_key] = True
+
+        dominionsc_metadata = DominionSCStatisticMetadata(
+            account=account,
+            consumption_id=consumption_statistic_id,
+            cost_id=cost_statistic_id,
+            name_prefix=name_prefix,
+            unit_class=consumption_unit_class,
+            unit=consumption_unit,
+            usage_point_id=usage_point_id,
+        )
+
+        if not consumption_exists:
+            await self._backfill_statistics(
+                dominionsc_metadata,
+                last_changed_per_account,
+                forecast,
+            )
+        else:
+            # Statistics exist - perform incremental update
+            self._backfill_initiated[backfill_key] = False
+            _LOGGER.debug(
+                "Found existing statistics for %s, performing incremental update",
+                consumption_statistic_id,
+            )
+
+            await self._update_statistics(
+                dominionsc_metadata,
+                last_stat,
+                last_cost_stat,
+                last_changed_per_account,
+                forecast,
+            )
+
     async def _insert_statistics(
         self,
         accounts: list[str],
         service_addr_account_no: str,
         forecast: Forecast | None,
     ) -> dict[str, datetime]:
-        """Insert DominionSC statistics."""
+        """
+        Insert DominionSC statistics.
+
+        An account already tracked under the legacy (pre-Phase-5) merged
+        statistic id, or one with a legacy backfill already in flight, is
+        processed via the ORIGINAL path with no register-discovery call at
+        all -- this guarantees an established install's statistic ids never
+        change, regardless of what discovery might find. Register discovery
+        (a network call) only happens, once, for an account that has never
+        been backfilled: if it finds a sole register (the common case: all
+        gas, most electric), the legacy id is used. If it finds multiple
+        registers (net-metered solar), each gets its own statistic.
+        See docs/REFACTOR_PLAN.md Phase 5.
+        """
         last_changed_per_account: dict[str, datetime] = {}
         for account in accounts:
-            consumption_statistic_id, cost_statistic_id, name_prefix = (
+            legacy_consumption_id, legacy_cost_id, legacy_name_prefix = (
                 _build_statistic_ids(service_addr_account_no, account)
             )
 
-            # Only track cost for electric accounts when a cost mode is active.
-            cost_mode, _, _ = _resolve_cost_config(self.config_entry.options)
-            if account != "ELECTRIC" or cost_mode == COST_MODE_NONE:
-                cost_statistic_id = None
-
-            _LOGGER.debug("Updating Statistics for %s", consumption_statistic_id)
-
-            consumption_unit_class = (
-                EnergyConverter.UNIT_CLASS
-                if account == "ELECTRIC"
-                else VolumeConverter.UNIT_CLASS
-            )
-            consumption_unit = (
-                UnitOfEnergy.WATT_HOUR
-                if account == "ELECTRIC"
-                else UnitOfVolume.CUBIC_FEET
-            )
-
-            # Check if we have existing statistics
-            last_stat = await get_instance(self.hass).async_add_executor_job(
+            legacy_last_stat = await get_instance(self.hass).async_add_executor_job(
                 get_last_statistics,
                 self.hass,
                 1,
-                consumption_statistic_id,
+                legacy_consumption_id,
                 True,
                 {"sum"},
             )
 
-            consumption_exists = bool(last_stat.get(consumption_statistic_id))
-
-            # Also check for cost statistics (for electric accounts)
-            last_cost_stat = {}
-            if cost_statistic_id:
-                last_cost_stat = await get_instance(self.hass).async_add_executor_job(
-                    get_last_statistics, self.hass, 1, cost_statistic_id, True, {"sum"}
+            if legacy_last_stat.get(
+                legacy_consumption_id
+            ) or self._backfill_initiated.get(account, False):
+                # Established install, or a legacy backfill already started
+                # this cycle and we're waiting on the recorder to commit --
+                # proceed exactly as pre-Phase-5, no discovery call.
+                await self._process_account(
+                    account=account,
+                    usage_point_id=None,
+                    consumption_statistic_id=legacy_consumption_id,
+                    cost_statistic_id=legacy_cost_id,
+                    name_prefix=legacy_name_prefix,
+                    last_changed_per_account=last_changed_per_account,
+                    forecast=forecast,
                 )
+                continue
 
-            if not consumption_exists:
-                # No statistics - perform initial backfill
-                if self._backfill_initiated.get(account, False):
-                    # Backfill was already started, waiting for recorder to commit
-                    _LOGGER.debug(
-                        "Backfill already initiated for %s, "
-                        "waiting for recorder to commit",
-                        consumption_statistic_id,
-                    )
-                    continue
+            # No legacy statistic, no backfill in flight: this account has
+            # never been backfilled. Discover registers once to decide the
+            # statistic-id scheme going forward.
+            registers = await self._discover_registers(account)
 
-                _LOGGER.info(
-                    "First statistics update for %s - "
-                    "backfilling since last billing cycle.",
-                    account,
-                )
-                self._backfill_initiated[account] = True
-
-            dominionsc_metadata = DominionSCStatisticMetadata(
-                account=account,
-                consumption_id=consumption_statistic_id,
-                cost_id=cost_statistic_id,
-                name_prefix=name_prefix,
-                unit_class=consumption_unit_class,
-                unit=consumption_unit,
-            )
-
-            if not consumption_exists:
-                await self._backfill_statistics(
-                    dominionsc_metadata,
-                    last_changed_per_account,
-                    forecast,
+            if len(registers) <= 1:
+                await self._process_account(
+                    account=account,
+                    usage_point_id=None,
+                    consumption_statistic_id=legacy_consumption_id,
+                    cost_statistic_id=legacy_cost_id,
+                    name_prefix=legacy_name_prefix,
+                    last_changed_per_account=last_changed_per_account,
+                    forecast=forecast,
                 )
             else:
-                # Statistics exist - perform incremental update
-                self._backfill_initiated[account] = False
-                _LOGGER.debug(
-                    "Found existing statistics for %s, performing incremental update",
-                    consumption_statistic_id,
+                _LOGGER.info(
+                    "Account %s has %d meter registers; tracking separately: %s",
+                    account,
+                    len(registers),
+                    [r.usage_point_id for r in registers],
                 )
-
-                await self._update_statistics(
-                    dominionsc_metadata,
-                    last_stat,
-                    last_cost_stat,
-                    last_changed_per_account,
-                    forecast,
-                )
+                for register in registers:
+                    consumption_statistic_id, cost_statistic_id, name_prefix = (
+                        _build_register_statistic_ids(
+                            service_addr_account_no,
+                            account,
+                            usage_point_id=register.usage_point_id,
+                            is_sole_register=False,
+                        )
+                    )
+                    await self._process_account(
+                        account=account,
+                        usage_point_id=register.usage_point_id,
+                        consumption_statistic_id=consumption_statistic_id,
+                        cost_statistic_id=cost_statistic_id,
+                        name_prefix=name_prefix,
+                        last_changed_per_account=last_changed_per_account,
+                        forecast=forecast,
+                    )
 
         return last_changed_per_account
 
@@ -623,10 +758,34 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         initial_sum = consumption_sum
 
         try:
-            _LOGGER.debug("API: async_get_usage_reads")
-            usage_reads = await self.api.async_get_usage_reads(
-                metadata.account, start, end
-            )
+            if metadata.usage_point_id is None:
+                # Legacy / sole-register path: flat, merged usage reads --
+                # unchanged from pre-Phase-5 behavior.
+                _LOGGER.debug("API: async_get_usage_reads")
+                usage_reads = await self.api.async_get_usage_reads(
+                    metadata.account, start, end
+                )
+            else:
+                # Multi-register path: fetch grouped by register and select
+                # only this metadata's register. A register with no data in
+                # this window (e.g. newly discovered) yields an empty list
+                # rather than an error.
+                _LOGGER.debug(
+                    "API: async_get_register_reads (register=%s)",
+                    metadata.usage_point_id,
+                )
+                registers = await self.api.async_get_register_reads(
+                    metadata.account, start, end
+                )
+                matching_register = next(
+                    (
+                        r
+                        for r in registers
+                        if r.usage_point_id == metadata.usage_point_id
+                    ),
+                    None,
+                )
+                usage_reads = matching_register.reads if matching_register else []
         except CannotConnect as err:
             _LOGGER.warning("Could not fetch statistics data: %s", err)
             return

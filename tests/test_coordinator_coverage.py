@@ -82,6 +82,13 @@ async def test_insert_statistics_backfill_path(
     forecast_mock.start_date = date(2025, 7, 1)
     forecast_mock.end_date = date(2025, 7, 31)
     coord.api.async_get_forecast = AsyncMock(return_value=forecast_mock)
+    # This account has never been backfilled (recorder returns {} below), so
+    # _insert_statistics now performs a one-time register-discovery call
+    # before deciding the statistic-id scheme (see docs/REFACTOR_PLAN.md
+    # Phase 5). An empty result correctly falls back to the legacy
+    # sole-register path, preserving this test's original assertions.
+    coord.api.get_timezone = MagicMock(return_value="America/New_York")
+    coord.api.async_get_register_reads = AsyncMock(return_value=[])
     with (
         patch.object(coord, "_backfill_statistics", new=AsyncMock()) as m_back,
         patch.object(coord, "_update_statistics", new=AsyncMock()) as m_upd,

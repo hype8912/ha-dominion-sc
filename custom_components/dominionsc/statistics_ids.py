@@ -1,4 +1,5 @@
-"""Pure statistic-id construction.
+"""
+Pure statistic-id construction.
 
 Builds the Home Assistant long-term-statistic ids and display-name prefix for
 a given account. Carries no Home Assistant dependency (only string handling).

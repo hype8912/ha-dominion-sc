@@ -1,4 +1,65 @@
-"""Coordinator to handle dominionsc connections."""
+"""
+Coordinator for the dominionsc integration.
+
+This is the **heart** of the integration. The
+:class:`DominionSCCoordinator` owns all communication with the Dominion API,
+processes usage data, and writes statistics into the HA recorder.
+
+Responsibilities
+----------------
+1. **Authentication**: re-logs in on every poll cycle (sessions are short-lived).
+2. **Data fetching**: retrieves account list, billing forecast, and usage intervals.
+3. **Statistics insertion**: inserts hourly energy consumption and cost statistics
+   into the HA recorder via ``async_add_external_statistics``. These appear in
+   the Energy Dashboard.
+4. **Register discovery** (Phase 5): for ELECTRIC accounts that have never been
+   backfilled, performs a one-time look-back to count physical meter registers.
+   Net-metered solar accounts have two registers (grid delivery + solar export)
+   and receive separate statistic series for each.
+5. **Backfill vs incremental update**: on first setup, loads data from the
+   billing-cycle start (or up to 365 days if extended backfill is enabled). On
+   subsequent polls, performs incremental updates with a short lookback window
+   to fill any gaps from late-arriving API data.
+6. **Historic cost recalculation**: when the user changes cost mode, can
+   re-price all stored consumption rows for a chosen date range using the new
+   rate schedule.
+
+Statistics data flow
+--------------------
+::
+
+    Dominion API (dominionsc library)
+            |
+    _async_update_data()
+            |
+    _insert_statistics(accounts, service_addr, forecast)
+            |
+         for each account:
+            |
+    _insert_statistics()  ─── checks recorder for legacy statistic ID
+            |                  ─── if no legacy stat AND no backfill in flight:
+            |                       calls _discover_registers() [once only]
+            |
+    _process_account()   ─── backfill or incremental update decision
+            |
+    _backfill_statistics()         OR      _update_statistics()
+            |                                      |
+    _process_and_insert_statistics() ──────────────┘
+            |
+        async_get_usage_reads() / async_get_register_reads()
+            |
+        _aggregate_hourly_data()  (wrapper -> aggregation.py)
+            |
+        async_add_external_statistics()  -> HA recorder
+
+Module-level re-exports
+-----------------------
+The data models and pure helpers that were originally in this file now live in
+:mod:`.models`, :mod:`.cost`, :mod:`.billing`, :mod:`.aggregation`, and
+:mod:`.statistics_ids`. They are re-exported here via ``__all__`` so that
+existing imports of ``from ...coordinator import <name>`` continue to work
+without change. See docs/REFACTOR_PLAN.md for the full migration history.
+"""
 
 import asyncio
 import logging
@@ -90,7 +151,19 @@ __all__ = [
 
 
 class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
-    """Handle fetching DominionSC data, updating sensors and inserting statistics."""
+    """
+    Fetch DominionSC data, update sensors, and insert long-term statistics.
+
+    This coordinator acts as the single owner of:
+    - The Dominion API client instance.
+    - The backfill-tracking state (which accounts have had their initial
+      statistics load started).
+    - The recalculation lock (prevents concurrent historic cost recalculations).
+
+    It extends HA's ``DataUpdateCoordinator`` with a 12-hour polling interval.
+    The base class handles debouncing, listener notification, and error-state
+    management automatically.
+    """
 
     config_entry: DominionSCConfigEntry
 
@@ -99,48 +172,84 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         hass: HomeAssistant,
         config_entry: DominionSCConfigEntry,
     ) -> None:
-        """Initialize the data handler."""
+        """
+        Initialise the coordinator and create the API client.
+
+        Args:
+            hass:         The Home Assistant instance.
+            config_entry: The config entry holding credentials and options.
+
+        """
         super().__init__(
             hass,
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            # Data is updated daily on DominionSC.
-            # Refresh every 12h to be at most 12h behind.
+            # Dominion's data is updated once daily. Poll every 12 hours so
+            # we are at most 12 hours behind without hammering the API.
             update_interval=timedelta(hours=12),
         )
+        # Long-lived API client. The session is re-authenticated on every poll
+        # cycle because Dominion sessions expire after a few minutes of inactivity.
         self.api = DominionSC(
             async_create_clientsession(hass, cookie_jar=create_cookie_jar()),
             config_entry.data[CONF_USERNAME],
             config_entry.data[CONF_PASSWORD],
+            # Cached TFA session token. Passing it allows the API client to
+            # skip the MFA challenge on re-authentication calls.
             config_entry.data.get(CONF_LOGIN_DATA),
         )
-        # Track if backfill has been initiated to prevent race condition
-        # where recorder hasn't committed stats yet and backfill runs again
+        # Maps a "backfill key" (account or account:usage_point_id) to True
+        # while the initial statistics backfill has been submitted to the
+        # recorder but not yet committed. Prevents a second poll from starting
+        # a duplicate backfill before the first one is visible in the recorder.
         self._backfill_initiated: dict[str, bool] = {}
-        # Lock held during historic cost recalculation so the options flow
-        # can detect that a recalculation is still running and block a second one.
+
+        # Held for the full duration of an async_recalculate_historic_costs
+        # call. The options flow inspects this lock and blocks a second
+        # recalculation from starting while one is already in progress.
         self.recalculation_lock = asyncio.Lock()
 
         @callback
         def _dummy_listener() -> None:
-            """Keep the coordinator polling even when no entities are registered."""
+            """
+            No-op listener that keeps the coordinator alive.
 
-        # Force the coordinator to periodically update by registering at least one
-        # listener. Needed when the _async_update_data below returns {} for utilities
-        # that don't provide forecast, which results to no sensors added, no
-        # registered listeners, and thus _async_update_data not periodically
-        # getting called which is needed for _insert_statistics.
+            Without at least one listener the base class stops calling
+            ``_async_update_data`` after the first poll. Accounts without a
+            billing forecast produce no sensor entities, which would otherwise
+            leave no listeners registered and halt statistics updates.
+            """
+
+        # Registering the dummy listener ensures the coordinator keeps polling
+        # even when no sensor entities are present (e.g. forecast unavailable).
         self.async_add_listener(_dummy_listener)
 
     async def _async_update_data(
         self,
     ) -> DominionSCData:
-        """Fetch data from API endpoint."""
+        """
+        Fetch account data from the Dominion API and insert statistics.
+
+        Called every 12 hours by the base coordinator. The sequence is:
+        1. Re-authenticate (sessions are short-lived).
+        2. Fetch accounts and billing forecast.
+        3. Call ``_insert_statistics`` to upsert hourly consumption / cost data
+           into the HA recorder.
+        4. Return a :class:`~.models.DominionSCData` snapshot for sensors.
+
+        Raises:
+            :class:`~homeassistant.exceptions.ConfigEntryAuthFailed`: on
+                ``InvalidAuth`` or ``MfaChallenge`` — triggers HA's built-in
+                re-auth flow so the user is prompted to re-enter credentials.
+            :class:`~homeassistant.helpers.update_coordinator.UpdateFailed`:
+                on ``CannotConnect`` — HA will retry on the next interval.
+
+        """
         try:
-            # Login expires after a few minutes.
-            # Given the infrequent updating (every 12h)
-            # assume previous session has expired and re-login.
+            # Sessions expire after a few minutes. Since we only poll every
+            # 12 hours, always treat the previous session as expired and
+            # re-authenticate unconditionally.
             _LOGGER.debug("API: async_login")
             await self.api.async_login()
         except (InvalidAuth, MfaChallenge) as err:
@@ -199,11 +308,27 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         final_sum: float,
     ) -> None:
         """
-        Build cost ``StatisticMetaData`` and push rows to the recorder.
+        Build cost StatisticMetaData and submit rows to the HA recorder.
 
-        Shared by ``_process_and_insert_statistics`` and
-        ``_async_recalculate_historic_costs_locked``, which previously duplicated
-        this block verbatim.
+        Factored out to avoid code duplication between
+        :meth:`_process_and_insert_statistics` (regular backfill/update) and
+        :meth:`_async_recalculate_historic_costs_locked` (historic recalculation),
+        which previously duplicated this block verbatim.
+
+        Cost statistics use ``unit_class=None`` and
+        ``unit_of_measurement=None`` because HA represents monetary values
+        without a physical unit class in the statistics schema.
+
+        Args:
+            cost_statistic_id: Full HA statistic ID for the cost series.
+            cost_stat_name:    Human-readable name for the series.
+            cost_statistics:   Pre-built list of :class:`StatisticData` rows
+                               (each with ``start``, ``state``, and ``sum``).
+            operation_type:    Short label for log messages (``"backfill"``,
+                               ``"update"``, or ``"recalculation"``).
+            final_sum:         The running sum at the end of the batch, logged
+                               for diagnostic purposes.
+
         """
         cost_metadata = StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
@@ -225,14 +350,28 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
     async def _discover_registers(self, account: str) -> list[RegisterReads]:
         """
-        Determine how many physical meter registers exist for this account.
+        Discover how many physical meter registers an account has.
 
-        Uses a short lookback window purely to count registers -- e.g. a
-        net-metered solar ELECTRIC account reports two: grid delivery and
-        solar export (see docs/REFACTOR_PLAN.md Phase 5). On any failure or
-        empty result, returns an empty list so the caller falls back to the
-        legacy single-statistic path, which is the safe default when the
-        register count can't be determined.
+        This is a one-time operation, called only for accounts that have never
+        been backfilled. It fetches a short window of register-level data
+        solely to count distinct ``usage_point_id`` values — it does not
+        process or insert any of that data.
+
+        Why a network call is safe here: this code path is only reached when
+        ``get_last_statistics`` returns empty *and* ``_backfill_initiated`` is
+        False, meaning this is a genuinely brand-new install or a first-time
+        account. Established installs never reach this code (see
+        :meth:`_insert_statistics` for the guard logic).
+
+        Args:
+            account: Account type (``"ELECTRIC"`` or ``"GAS"``).
+
+        Returns:
+            A list of :class:`~dominionsc.models.register_reads.RegisterReads`
+            objects, one per physical meter register. Returns an empty list on
+            any API failure, causing the caller to fall back to the legacy
+            single-statistic path (safe default).
+
         """
         today = date.today()
         end_date = today - timedelta(days=1)
@@ -261,12 +400,36 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         forecast: Forecast | None,
     ) -> None:
         """
-        Resolve backfill-vs-update state for one statistic id and dispatch.
+        Decide whether to backfill or incrementally update one statistic series.
 
-        Shared by both the sole-register (legacy) and multi-register paths in
-        ``_insert_statistics`` so the backfill/update decision logic exists in
-        exactly one place. ``usage_point_id`` is ``None`` for the legacy,
-        merged-register case; set for a specific meter register.
+        This method contains the backfill-vs-update decision logic in a single
+        place so that both the sole-register (legacy) path and the multi-register
+        (Phase 5) path in :meth:`_insert_statistics` share identical behaviour.
+
+        Decision tree:
+        - No existing statistics in recorder AND backfill not yet started
+          -> start backfill, mark ``_backfill_initiated[backfill_key] = True``.
+        - No existing statistics AND backfill already started
+          -> skip (wait for recorder to commit the in-flight data).
+        - Existing statistics found
+          -> clear the backfill flag and perform an incremental update.
+
+        The ``backfill_key`` is ``"{account}:{usage_point_id}"`` for multi-register
+        accounts so two registers of the same account type (both ``"ELECTRIC"``)
+        each get their own independent tracking flag.
+
+        Args:
+            account:                    Account type (``"ELECTRIC"`` or ``"GAS"``).
+            usage_point_id:             ESPI UsagePoint ID for this register, or
+                                        ``None`` for the legacy merged path.
+            consumption_statistic_id:   HA statistic ID for energy consumption.
+            cost_statistic_id:          HA statistic ID for cost, or ``None``.
+            name_prefix:                Template for human-readable stat names.
+            last_changed_per_account:   Mutable dict updated with the timestamp
+                                        of the most recent data interval processed.
+            forecast:                   Current billing forecast (used for backfill
+                                        start date and billing-cycle estimation).
+
         """
         # Only track cost for electric accounts when a cost mode is active.
         cost_mode, _, _ = _resolve_cost_config(self.config_entry.options)
@@ -365,18 +528,40 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         forecast: Forecast | None,
     ) -> dict[str, datetime]:
         """
-        Insert DominionSC statistics.
+        Orchestrate statistics insertion for all accounts on a service address.
 
-        An account already tracked under the legacy (pre-Phase-5) merged
-        statistic id, or one with a legacy backfill already in flight, is
-        processed via the ORIGINAL path with no register-discovery call at
-        all -- this guarantees an established install's statistic ids never
-        change, regardless of what discovery might find. Register discovery
-        (a network call) only happens, once, for an account that has never
-        been backfilled: if it finds a sole register (the common case: all
-        gas, most electric), the legacy id is used. If it finds multiple
-        registers (net-metered solar), each gets its own statistic.
-        See docs/REFACTOR_PLAN.md Phase 5.
+        This is the main entry point for the statistics pipeline. It iterates
+        over all account types (ELECTRIC, GAS) and routes each one through
+        either the legacy single-statistic path or the multi-register (Phase 5)
+        path.
+
+        Statistic-ID stability guarantee (critical for existing installs)
+        -----------------------------------------------------------------
+        An account that already has statistics in the recorder (the
+        ``legacy_last_stat`` check) is processed via the ORIGINAL path with
+        **no register-discovery network call**. This guarantees that established
+        installs' statistic IDs never change regardless of what register
+        discovery might find, and Energy Dashboard history is never orphaned.
+
+        Register discovery (a network call) only happens **once per account**,
+        only for accounts that have **never** been backfilled:
+        - 0 or 1 registers found -> use legacy IDs (identical to pre-Phase-5).
+        - 2+ registers found (net-metered solar) -> use per-register IDs.
+
+        After the first backfill the recorder will have statistics under the
+        chosen ID, the ``legacy_last_stat`` check will be truthy on the next
+        poll, and discovery will never be called again.
+
+        Args:
+            accounts:               List of account type strings (e.g.
+                                    ``["ELECTRIC", "GAS"]``).
+            service_addr_account_no: Service address / account number from API.
+            forecast:               Current billing forecast, or ``None``.
+
+        Returns:
+            Dict mapping account type -> timestamp of most recent interval
+            processed. Sensor entities use this for the ``last_changed`` value.
+
         """
         last_changed_per_account: dict[str, datetime] = {}
         for account in accounts:
@@ -459,7 +644,40 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         last_changed_per_account: dict[str, datetime],
         forecast: Forecast | None,
     ) -> None:
-        """Backfill historical statistics for initial setup."""
+        """
+        Load historical statistics on first setup (initial backfill).
+
+        Determines the fetch window based on the user's backfill preferences
+        in ``config_entry.options``:
+
+        - **No extended backfill** (default): fetch from the billing-cycle
+          start date provided by the API forecast to yesterday.
+        - **Extended backfill** (``CONF_EXTENDED_BACKFILL=True``): fetch from
+          365 days ago to yesterday.
+        - **Extended cost backfill** (``CONF_EXTENDED_COST_BACKFILL=True``,
+          requires extended backfill): also calculate cost for the full 365-day
+          window. Without this flag, cost is only calculated from the current
+          billing-cycle start even when consumption goes further back.
+
+        The ``cost_start_date`` parameter limits cost calculation without
+        limiting consumption fetching — users can have full consumption history
+        while only computing costs from the point where the current rate
+        schedule applies.
+
+        After determining the date range, delegates to
+        :meth:`_process_and_insert_statistics` with ``consumption_sum=0.0``
+        (starting from scratch) and ``last_stat_dt=None`` (no prior data).
+
+        Args:
+            metadata:                  Statistic metadata for this account/register.
+            last_changed_per_account:  Mutable dict updated with the latest interval
+                                       timestamp after insert.
+            forecast:                  Current billing forecast. ``start_date`` is
+                                       used as the non-extended backfill start and as
+                                       the cost-start gate when only consumption is
+                                       extended.
+
+        """
         today = date.today()
         billing_cycle_start = forecast.start_date
         data_date = today - timedelta(days=1)  # Yesterday
@@ -512,7 +730,41 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         last_changed_per_account: dict[str, datetime],
         forecast: Forecast | None,
     ) -> None:
-        """Update statistics with new data since last recorded statistic."""
+        """
+        Incrementally update statistics since the last recorded data point.
+
+        Called when statistics already exist in the recorder (regular 12-hour
+        polls after the initial backfill). The strategy is:
+
+        1. Determine the last recorded statistic's timestamp and running sum.
+        2. Compute a "lookback window" that extends ``LOOKBACK_DAYS`` before
+           yesterday. This catches late-arriving API data (intervals the API
+           delivered a day or two after the fact).
+        3. Query the recorder for all existing statistic rows in that window
+           so we can skip already-recorded hours while still contributing their
+           Wh to the cumulative counter for tier accuracy.
+        4. If the window contains only fully-covered dates AND there are no new
+           days since the last statistic, skip the API call entirely.
+        5. Otherwise, fetch usage data from the API and delegate to
+           :meth:`_process_and_insert_statistics`.
+
+        The existing ``consumption_sum`` and ``cost_sum`` from the last
+        recorder row are passed through so the new statistics rows continue the
+        cumulative sum from where the recorder left off.
+
+        Args:
+            metadata:                 Statistic metadata for this account/register.
+            last_stat:                ``get_last_statistics`` result dict keyed by
+                                      ``metadata.consumption_id``.
+            last_cost_stat:           ``get_last_statistics`` result for the cost
+                                      statistic, or an empty dict if none exists.
+            last_changed_per_account: Mutable dict updated with the latest interval
+                                      timestamp.
+            forecast:                 Current billing forecast. ``start_date`` is
+                                      used to clamp the lookback window to data
+                                      the API actually has.
+
+        """
         try:
             # Get the last recorded statistic time and sum
             last_stat_data = last_stat[metadata.consumption_id][0]
@@ -695,15 +947,29 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         existing_hours: set[datetime] | None = None,
     ) -> tuple[dict[datetime, float], dict[datetime, float]]:
         """
-        Aggregate usage-read intervals into hourly consumption and cost buckets.
+        Resolve cost config and delegate to the pure aggregation function.
 
-        Thin wrapper that resolves cost config from this coordinator's options
-        and delegates to the pure ``aggregation.aggregate_hourly_data``. Kept as
-        a method so existing tests calling ``coordinator._aggregate_hourly_data``
-        (or patching it) are unaffected. See docs/REFACTOR_PLAN.md Phase 3.
+        This is a thin coordinator-method wrapper around the pure
+        :func:`~.aggregation.aggregate_hourly_data` function. It exists so that:
+
+        1. The pure function has no dependency on the coordinator or HA.
+        2. Tests that call ``coordinator._aggregate_hourly_data(...)`` or patch
+           it (e.g. to inject mock data) are unaffected by the module split.
+
+        See :func:`~.aggregation.aggregate_hourly_data` for the full parameter
+        and return-value documentation.
+
+        Args:
+            usage_reads:      Raw interval objects from the Dominion API.
+            metadata:         Statistic metadata for this account/register.
+            forecast:         Current billing forecast.
+            start_date:       Earliest date of the fetch window.
+            is_electric:      ``True`` for ELECTRIC accounts.
+            cost_start_date:  Optional gate for cost calculation start date.
+            existing_hours:   Hours already present in the recorder (update path).
 
         Returns:
-            (hourly_consumption, hourly_cost) dictionaries keyed by hour start.
+            ``(hourly_consumption, hourly_cost)`` dicts keyed by hour start.
 
         """
         cost_mode_here, fixed_rate_here, rate_schedule_here = _resolve_cost_config(
@@ -738,13 +1004,54 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         existing_hours: set[datetime] | None = None,
     ) -> None:
         """
-        Process usage data and insert statistics.
+        Fetch usage data from the API, aggregate it, and write to the recorder.
 
-        Common logic for backfill and updates.
+        This is the common implementation shared by both the backfill path and
+        the incremental-update path. It:
 
-        When ``existing_hours`` is provided (incremental updates with lookback),
-        intervals whose hour bucket is already in the recorder are skipped so
-        that only newly-available data (gap fills) is inserted.
+        1. Converts date bounds to timezone-aware datetimes for the API call.
+        2. Fetches usage reads — either flat (legacy/sole-register path via
+           ``async_get_usage_reads``) or register-specific (multi-register path
+           via ``async_get_register_reads``, filtered to this metadata's
+           ``usage_point_id``).
+        3. Filters out zero-consumption days. The API sometimes returns zeros
+           for days where data hasn't been processed yet (e.g. holidays or
+           very recent dates). Including zeros would insert false "no usage"
+           records that are difficult to correct later.
+        4. Aggregates raw intervals into hourly buckets using
+           :meth:`_aggregate_hourly_data`.
+        5. Builds cumulative ``StatisticData`` rows (each row's ``sum`` includes
+           all preceding rows) and submits them to the HA recorder via
+           ``async_add_external_statistics``.
+
+        The caller passes ``consumption_sum`` and ``cost_sum`` from the last
+        existing statistic row so that new rows continue the cumulative sum
+        series seamlessly. For the backfill path both are ``0.0``.
+
+        Args:
+            metadata:                 Statistic metadata (IDs, units, name prefix).
+            start_date:               First day of the API fetch window (inclusive).
+            data_date:                Last day of the fetch window (inclusive;
+                                      typically yesterday — today's data is incomplete).
+            consumption_sum:          Running sum of Wh at the start of this batch.
+                                      ``0.0`` for initial backfill.
+            cost_sum:                 Running sum of USD at the start of this batch.
+                                      ``0.0`` for initial backfill.
+            last_stat_dt:             Datetime of the most recent existing statistic
+                                      row, or ``None`` for initial backfill. Used to
+                                      populate ``last_changed_per_account`` when there
+                                      is nothing new to insert.
+            last_changed_per_account: Mutable dict updated with the timestamp of the
+                                      last interval processed this run.
+            forecast:                 Current billing forecast. Required for tiered-rate
+                                      billing-cycle estimation.
+            cost_start_date:          If set, cost rows are only produced for intervals
+                                      on or after this date (extended consumption but
+                                      not extended cost backfill).
+            existing_hours:           Set of hour-start datetimes already in the
+                                      recorder. Skipped in output but still contribute
+                                      to cumulative Wh for tier accuracy.
+
         """
         # Convert dates to datetimes for API call
         tz = await dt_util.async_get_time_zone(self.api.get_timezone())
@@ -923,13 +1230,23 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         new_options: dict[str, Any],
     ) -> None:
         """
-        Recalculate cost statistics for a historic date range using a new cost mode.
+        Recalculate cost statistics for a historic date range under a new rate.
 
-        This is the public entry point.  It acquires ``recalculation_lock`` for the
-        entire duration so the options flow can detect a running recalculation and
-        prevent the user from starting a second one.
+        Public entry point, called as an ``asyncio`` task by the options flow
+        (non-blocking). Acquires :attr:`recalculation_lock` for the full
+        duration so :meth:`~.options_flow.DominionSCOptionsFlow.async_step_init`
+        can detect a running recalculation and block a second one from starting.
 
-        The actual work is delegated to ``_async_recalculate_historic_costs_locked``.
+        The actual work is delegated to
+        :meth:`_async_recalculate_historic_costs_locked`.
+
+        Args:
+            start_date:  First day of the recalculation window (inclusive).
+            end_date:    Last day of the window (inclusive; must not be in future).
+            new_options: The new options dict (from the options flow). The new
+                         cost mode and rate are read from this, not from the
+                         config entry (which may not have been saved yet).
+
         """
         async with self.recalculation_lock:
             await self._async_recalculate_historic_costs_locked(
@@ -943,12 +1260,34 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         new_options: dict[str, Any],
     ) -> None:
         """
-        Recalculate cost statistics from stored consumption data.
+        Re-price stored consumption rows and upsert cost statistics.
 
-        For tiered rates the cumulative Wh counter resets at each estimated
-        billing cycle boundary so tier thresholds are applied correctly.
-        The running cost ``sum`` is seeded from the last record before the
-        window to keep the statistic series continuous.
+        Called while :attr:`recalculation_lock` is held. Works in six stages:
+
+        1. **Resolve config**: extract cost mode, fixed rate, and rate schedule
+           from ``new_options``. Exit early if mode is ``COST_MODE_NONE``.
+        2. **Estimate billing cycles** (tiered rates only): needed to reset the
+           cumulative Wh counter at cycle boundaries for accurate tier splits.
+        3. **Fetch consumption rows** from the recorder. For tiered rates, the
+           fetch window extends back to the start of the earliest estimated
+           billing cycle (which may be before ``start_date``) so that the Wh
+           counter is seeded correctly even for mid-cycle window starts.
+        4. **Seed the running cost sum** from the last cost statistic row that
+           precedes the window. This keeps the recalculated series continuous
+           with any pre-existing rows outside the window.
+        5. **Price each consumption row**, resetting ``cumulative_wh`` at
+           billing-cycle boundaries. Only rows within the requested window are
+           emitted to the output; earlier rows are used only for Wh seeding.
+        6. **Upsert** via :meth:`_push_cost_statistics`.
+
+        Note: this only recalculates the ELECTRIC cost statistic. Gas accounts
+        have no cost statistic.
+
+        Args:
+            start_date:  First day of the recalculation window (inclusive).
+            end_date:    Last day of the window (inclusive).
+            new_options: Options dict containing the new cost mode and rate.
+
         """
         new_cost_mode, new_fixed_rate, rate_schedule = _resolve_cost_config(new_options)
         if new_cost_mode == COST_MODE_NONE:

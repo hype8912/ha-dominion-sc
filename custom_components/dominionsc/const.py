@@ -1,38 +1,163 @@
-"""Constants for the dominionsc integration."""
+"""
+Constants for the dominionsc integration.
+
+All integration-wide constants are defined here to provide a single source of
+truth and to avoid circular imports. Groupings:
+
+**Identity**
+    :data:`DOMAIN`, :data:`COMMON_NAME`
+
+**Config-entry data keys** (stored in ``entry.data``, set during config flow)
+    :data:`CONF_LOGIN_DATA`
+
+**Config-entry options keys** (stored in ``entry.options``, user-changeable)
+    :data:`CONF_COST_MODE`, :data:`CONF_FIXED_RATE`,
+    :data:`CONF_EXTENDED_BACKFILL`, :data:`CONF_EXTENDED_COST_BACKFILL`
+
+**Cost mode identifiers** (values for ``CONF_COST_MODE``)
+    :data:`COST_MODE_NONE`, :data:`COST_MODE_FIXED`,
+    :data:`COST_MODE_RATE_8`, :data:`COST_MODE_RATE_6`
+
+**Tuning parameters**
+    :data:`DEFAULT_FIXED_RATE`, :data:`EXTENDED_BACKFILL_DAYS`,
+    :data:`LOOKBACK_DAYS`
+
+Adding a new cost mode
+----------------------
+1. Add a new ``COST_MODE_*`` constant here.
+2. Define a matching :class:`~.rates.RateSchedule` in :mod:`.rates`.
+3. Register it in :data:`~.rates.TIERED_RATE_REGISTRY` (or handle it as a
+   special case in :func:`~.cost._calculate_cost_for_wh`).
+No other files need to change.
+"""
 
 import re
 from typing import Final
 
+# ---------------------------------------------------------------------------
+# Integration identity
+# ---------------------------------------------------------------------------
+
+# Unique identifier for this integration, used as:
+#   - the key in hass.data[DOMAIN]
+#   - the prefix for all statistic IDs (e.g. "dominionsc:addr_electric_consumption")
+#   - the config-entry domain
 DOMAIN = "dominionsc"
+
+# Human-readable display name shown in the UI.
 COMMON_NAME = "Dominion Energy SC"
 
+# ---------------------------------------------------------------------------
+# Config-entry DATA keys  (entry.data — credentials, not user-configurable)
+# ---------------------------------------------------------------------------
+
+# Serialised TFA session token returned by the ``dominionsc`` library after a
+# successful two-factor authentication. Persisting it allows subsequent logins
+# to skip the TFA challenge entirely (the library handles the cookie exchange).
+# Set to ``None`` on the first login (before TFA has been completed).
 CONF_LOGIN_DATA = "login_data"
 
-# Number of days to backfill on first setup or statistics upgrade
-# BACKFILL_DAYS = 30
+# ---------------------------------------------------------------------------
+# Config-entry OPTIONS keys  (entry.options — user-configurable via options flow)
+# ---------------------------------------------------------------------------
 
-# Options keys for cost configuration
+# Which cost-calculation mode to use. One of the COST_MODE_* constants below.
 CONF_COST_MODE: Final = "cost_mode"
+
+# User-supplied flat rate in $/kWh. Only read when CONF_COST_MODE == COST_MODE_FIXED.
 CONF_FIXED_RATE: Final = "fixed_rate"
 
-# Cost mode options
+# If True, seed up to EXTENDED_BACKFILL_DAYS of consumption history on first setup.
+# Default is False (only backfill since the start of the current billing cycle).
+CONF_EXTENDED_BACKFILL: Final = "extended_backfill"
+
+# If True, also calculate cost statistics over the extended consumption window.
+# Requires CONF_EXTENDED_BACKFILL == True (cost is derived from consumption data).
+# Default is False (cost only calculated from the current billing cycle start).
+CONF_EXTENDED_COST_BACKFILL: Final = "extended_cost_backfill"
+
+# ---------------------------------------------------------------------------
+# Cost mode identifiers
+# ---------------------------------------------------------------------------
+
+# No cost calculation — only energy consumption statistics are produced.
 COST_MODE_NONE: Final = "none"
+
+# User-defined flat rate in $/kWh (value from CONF_FIXED_RATE).
 COST_MODE_FIXED: Final = "fixed"
+
+# Dominion Energy SC Rate Schedule 8 — Residential Service.
+# Tiered (first 800 kWh vs. over 800 kWh) with seasonal summer/winter rates.
+# See rates.SC_RATE_8 for the exact values.
 COST_MODE_RATE_8: Final = "rate_8"
+
+# Dominion Energy SC Rate Schedule 6 — Energy Saver / Conservation Rate.
+# Tiered with seasonal summer/winter rates. See rates.SC_RATE_6 for details.
 COST_MODE_RATE_6: Final = "rate_6"
 
-# Default cost values
-DEFAULT_FIXED_RATE: Final = 0.14164  # $/Wh
+# ---------------------------------------------------------------------------
+# Default values
+# ---------------------------------------------------------------------------
 
-# Backfill options
-CONF_EXTENDED_BACKFILL: Final = "extended_backfill"
-CONF_EXTENDED_COST_BACKFILL: Final = "extended_cost_backfill"
+# Default fixed rate when the user selects COST_MODE_FIXED but has not yet
+# entered a custom value. 0.14164 $/kWh matches the Rate 6 first-tier rate.
+# Note: internally cost calculations receive this value in $/kWh and convert
+# to $/Wh by dividing by 1000 (see cost._calculate_cost_for_wh).
+DEFAULT_FIXED_RATE: Final = 0.14164  # $/kWh
+
+# ---------------------------------------------------------------------------
+# Backfill / lookback tuning
+# ---------------------------------------------------------------------------
+
+# Maximum number of days to backfill when the user enables extended backfill.
+# Fetching too far back is slow and the API may not have data older than a year.
 EXTENDED_BACKFILL_DAYS: Final = 365
 
-# Lookback
+# Number of days to re-examine on each incremental update in addition to new
+# days. This "lookback window" catches late-arriving API data (the Dominion API
+# sometimes delivers an interval a day or two after the fact).
 LOOKBACK_DAYS: Final = 5
 
 
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+
 def clean_service_addr(service_addr_account_no: str) -> str:
-    """Normalise a service-address / account number into a safe identifier fragment."""
+    """
+    Normalise a service-address / account number into a safe identifier fragment.
+
+    Used to build statistic IDs and device identifiers that must be safe for
+    use in URLs, file paths, and HA's entity registry. The same transformation
+    is applied every time, so the output is stable for a given input.
+
+    Transformation rules:
+    - Any run of non-word characters (anything that is not ``[a-zA-Z0-9_]``)
+      is replaced with a single underscore.
+    - A leading digit is prefixed with an underscore (Python identifiers and
+      many HA IDs cannot start with a digit).
+    - Leading/trailing underscores are stripped.
+    - The result is lowercased.
+
+    Examples::
+
+        clean_service_addr("123 Main St")  → "123_main_st"
+        clean_service_addr("1234567-8")    → "1234567_8"
+        clean_service_addr("ABC-123")      → "abc_123"
+
+    Args:
+        service_addr_account_no: Raw service address or account number string
+                                 as returned by the Dominion API.
+
+    Returns:
+        A lowercase, underscore-separated identifier with no leading digits or
+        special characters.
+
+    Warning:
+        **Do not change this function.** The output is embedded in every
+        statistic ID stored in the HA recorder. Changing it would orphan all
+        existing Energy Dashboard history for existing installs.
+
+    """
     return re.sub(r"[\W]+|^(?=\d)", "_", service_addr_account_no).strip("_").lower()

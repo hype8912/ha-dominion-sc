@@ -1,14 +1,43 @@
 """
 Pure hourly-aggregation logic.
 
-``aggregate_hourly_data`` buckets usage-read intervals into hourly consumption
-and cost dictionaries, handling tiered billing-cycle boundary resets and
-already-recorded-hour skipping. It is a pure function -- no Home Assistant, no
-recorder, no coordinator ``self`` -- so it can be tested with synthetic inputs.
+:func:`aggregate_hourly_data` is the core of the statistics-insertion pipeline.
+It takes raw usage-read intervals from the Dominion API and produces two
+dictionaries keyed by hour:
 
-The coordinator retains a thin ``_aggregate_hourly_data`` method that resolves
-cost config from its options and delegates here, so existing tests that call
-``coordinator._aggregate_hourly_data(...)`` (or patch it) are unaffected.
+- ``hourly_consumption`` — Wh consumed in each clock hour.
+- ``hourly_cost``        — USD cost for each clock hour (empty for non-electric
+  accounts or when cost mode is COST_MODE_NONE).
+
+The function is a **pure function** — no Home Assistant dependency, no recorder
+calls, no coordinator ``self``. Every input it needs is passed explicitly. This
+makes it straightforward to unit-test with synthetic data.
+
+Key behaviours
+--------------
+**Tiered-rate billing-cycle tracking**
+    For Rate 8 and Rate 6 the tier resets at each billing-cycle boundary. The
+    function estimates all cycles using :func:`~.billing._estimate_billing_cycles`
+    and resets ``cumulative_wh`` to 0 when an interval crosses into a new cycle.
+    This reset must happen even for hours that are already in the recorder
+    (``existing_hours``) so the cumulative counter stays accurate for subsequent
+    intervals. See the ordering note in the loop body.
+
+**Skipping already-recorded hours**
+    When called from the incremental-update path, ``existing_hours`` contains the
+    set of hour timestamps already present in the HA recorder. Intervals whose
+    hour bucket is in this set are skipped (not re-emitted) but their Wh still
+    contribute to ``cumulative_wh`` for tier correctness.
+
+**Cost start date gate**
+    When the user enables extended consumption backfill but NOT extended cost
+    backfill, ``cost_start_date`` is set to the start of the current billing
+    cycle. Intervals before that date contribute to consumption statistics but
+    produce no cost row.
+
+The coordinator retains a thin ``_aggregate_hourly_data`` wrapper method that
+resolves cost config from its options and delegates here, so existing tests that
+call ``coordinator._aggregate_hourly_data(...)`` are unaffected.
 See docs/REFACTOR_PLAN.md Phase 3.
 """
 
@@ -41,20 +70,66 @@ def aggregate_hourly_data(
     """
     Aggregate usage-read intervals into hourly consumption and cost buckets.
 
-    Handles billing-cycle boundary resets for tiered rates, skips hours
-    already present in ``existing_hours``, and respects ``cost_start_date``
-    for extended-backfill scenarios.
+    Processes a flat list of ``UsageRead`` objects (typically ~15-minute
+    intervals from the Dominion API), groups them into clock-hour buckets,
+    calculates per-hour costs (for electric accounts), and returns both
+    dictionaries. Hours already present in the recorder are skipped in the
+    output but still contribute to the cumulative Wh counter so tier
+    calculations remain correct.
 
-    The resolved cost configuration (``cost_mode``, ``fixed_rate``,
-    ``rate_schedule``, ``is_tiered_rate``) is passed in explicitly so this
-    function has no dependency on the coordinator or its options.
+    The cost configuration is passed in explicitly (rather than read from the
+    coordinator's options) so this function has no Home Assistant dependency
+    and can be unit-tested with synthetic inputs.
+
+    Args:
+        usage_reads:    Raw interval objects from the Dominion API. Each must
+                        have ``.start_time`` (datetime) and ``.consumption``
+                        (float, in Wh). The list may be unsorted; it is sorted
+                        by start_time internally.
+        metadata:       Statistic metadata for this account/register, used to
+                        check whether a cost_id exists and which account type
+                        this is.
+        forecast:       Current billing-cycle forecast from the API. Required
+                        when ``is_tiered_rate`` is ``True`` (provides the
+                        anchor cycle dates for billing-cycle estimation).
+                        May be ``None`` for non-tiered modes.
+        start_date:     The earliest date of the fetch window. Used as the
+                        ``earliest`` bound when estimating billing cycles.
+        is_electric:    ``True`` if this account is ELECTRIC. Cost statistics
+                        are only produced for electric accounts.
+        cost_mode:      One of the ``COST_MODE_*`` constants. Passed through
+                        to :func:`~.cost._calculate_cost_for_wh`.
+        fixed_rate:     $/kWh rate for COST_MODE_FIXED. Ignored otherwise.
+        rate_schedule:  :class:`~.rates.RateSchedule` for tiered modes, or
+                        ``None``. Passed through to
+                        :func:`~.cost._calculate_cost_for_wh`.
+        is_tiered_rate: ``True`` when ``cost_mode`` maps to an entry in
+                        :data:`~.rates.TIERED_RATE_REGISTRY`. Controls whether
+                        billing-cycle boundary tracking is active.
+        cost_start_date: When set, cost rows are only produced for intervals on
+                        or after this date. Used when consumption backfill is
+                        extended but cost backfill is not. ``None`` means no
+                        additional restriction.
+        existing_hours: Set of datetime values (hour starts) already present in
+                        the HA recorder for this statistic. Hours in this set
+                        are excluded from the output dictionaries to avoid
+                        duplicate inserts, but their Wh still accumulate in
+                        ``cumulative_wh``. ``None`` means no hours are known
+                        to already exist (backfill path).
 
     Returns:
-        (hourly_consumption, hourly_cost) dictionaries keyed by hour start.
+        A 2-tuple ``(hourly_consumption, hourly_cost)`` where both dicts are
+        keyed by hour-start datetime and values are floats:
+        - ``hourly_consumption``: Wh consumed in that hour.
+        - ``hourly_cost``:        USD cost for that hour (empty dict when cost
+          calculation is disabled or this is a gas account).
 
     """
+    # Running total of Wh consumed in the current billing cycle (reset at each
+    # cycle boundary). Used by tiered rates to track which tier applies.
     cumulative_wh = 0.0
 
+    # Pre-compute billing cycles once (only for tiered rates).
     billing_cycles: list[tuple[date, date]] = []
     if is_tiered_rate:
         today = date.today()
@@ -71,38 +146,49 @@ def aggregate_hourly_data(
             billing_cycles[-1][1] if billing_cycles else "?",
         )
 
+    # Tracks which billing cycle the previous interval was in, so we can
+    # detect when we cross into a new cycle and reset cumulative_wh.
     current_cycle: tuple[date, date] | None = None
+
     hourly_consumption: dict[datetime, float] = {}
     hourly_cost: dict[datetime, float] = {}
 
+    # Process intervals in chronological order so cumulative_wh is correct.
     for usage_read in sorted(usage_reads, key=lambda i: i.start_time):
         interval_date = usage_read.start_time.date()
+        # Truncate the sub-hour timestamp to the hour boundary for bucketing.
         hour_start = usage_read.start_time.replace(minute=0, second=0, microsecond=0)
 
-        # For tiered rates, always track billing cycle boundaries
-        # even for already-recorded hours so cumulative_wh is correct.
+        # --- Tiered-rate billing-cycle boundary tracking ---
+        # This MUST happen before the existing_hours skip below so that
+        # cumulative_wh stays correct even for already-recorded hours.
+        # If we skipped this for already-recorded hours, cumulative_wh would
+        # be wrong for subsequent intervals and tier splits would be incorrect.
         if is_electric and metadata.cost_id:
             if is_tiered_rate and billing_cycles:
                 row_cycle = _find_billing_cycle_for_date(interval_date, billing_cycles)
                 if row_cycle != current_cycle:
+                    # Crossed a billing-cycle boundary — reset the counter.
                     current_cycle = row_cycle
                     cumulative_wh = 0.0
 
-        # Skip hours that already have recorded statistics — we still
-        # need to accumulate cumulative_wh above so tier boundaries
-        # stay correct, but we don't re-emit these hours.
+        # --- Skip already-recorded hours ---
+        # Hours already in the recorder should not be re-inserted, but we
+        # still need their Wh contribution for tier-boundary accuracy.
         if existing_hours and hour_start in existing_hours:
             cumulative_wh += usage_read.consumption
             continue
 
+        # --- Accumulate consumption ---
         if hour_start not in hourly_consumption:
             hourly_consumption[hour_start] = 0.0
         hourly_consumption[hour_start] += usage_read.consumption
 
-        # Calculate cost for electric accounts with cost tracking
+        # --- Calculate cost (electric accounts only) ---
         if is_electric and metadata.cost_id:
-            # Skip cost for intervals before cost_start_date when set
-            # (e.g. extended consumption backfill without extended cost)
+            # Honour the cost_start_date gate: when consumption is backfilled
+            # further than cost (user only enabled one of the two extended
+            # backfill options), skip cost rows for the early window.
             if cost_start_date is not None and interval_date < cost_start_date:
                 cumulative_wh += usage_read.consumption
                 continue
@@ -118,6 +204,8 @@ def aggregate_hourly_data(
                 fixed_rate,
                 rate_schedule,
             )
+            # Advance the cumulative counter AFTER pricing so the cost
+            # function receives the Wh total *before* this interval.
             cumulative_wh += usage_read.consumption
 
     return hourly_consumption, hourly_cost

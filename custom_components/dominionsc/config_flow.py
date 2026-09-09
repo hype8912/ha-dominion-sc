@@ -1,14 +1,40 @@
 """
-Config flow for dominionsc integration.
+Config flow for the dominionsc integration.
 
-Initial setup (config flow) steps:
-  user → [tfa_options → tfa_code] → backfill_options → cost_mode
-       → [cost_mode_fixed_rate]
+This module guides a first-time user through setting up the integration,
+and handles re-authentication when the stored session token expires.
 
-Re-authentication (reauth flow) steps:
-  reauth → reauth_confirm → [tfa_options → tfa_code]
+Initial setup flow (step IDs)
+------------------------------
+::
 
-Options are handled by :class:`DominionSCOptionsFlow` in ``options_flow.py``.
+    user
+     +-- no MFA  ------------------------------------------------> backfill_options
+     +-- MFA required --> tfa_options --> tfa_code -----------> backfill_options
+     +-- bad credentials  ------------------------------------> (error, retry)
+                                                                        |
+    backfill_options -----------------------------------------------> cost_mode
+                                                                        |
+    cost_mode --> "rate_8" / "rate_6" / "none" ------------------> CREATE ENTRY
+              +-- "fixed" --------> cost_mode_fixed_rate ---------> CREATE ENTRY
+
+Re-authentication flow
+-----------------------
+::
+
+    reauth --> reauth_confirm
+                +-- no MFA  -----------------------------------------> RELOAD ENTRY
+                +-- MFA required --> tfa_options --> tfa_code -------> RELOAD ENTRY
+                +-- bad credentials  ---------------------------------> (error)
+
+Key design decisions
+--------------------
+- The TFA session token (``CONF_LOGIN_DATA``) is stored in ``entry.data`` so
+  future 12-hour re-logins skip the MFA challenge without user interaction.
+- Backfill and cost-mode choices are stored in ``entry.options`` (not ``data``)
+  so they can be changed later via the options flow without re-authenticating.
+- Options are handled by :class:`~.options_flow.DominionSCOptionsFlow`
+  in ``options_flow.py``.
 """
 
 from __future__ import annotations
@@ -65,14 +91,35 @@ async def _validate_login(
     hass: HomeAssistant,
     data: Mapping[str, Any],
 ) -> None:
-    """Validate login data and raise exceptions on failure."""
+    """
+    Attempt a login with the provided credentials and raise on failure.
+
+    Creates a throw-away API client instance, attempts to log in, and discards
+    the client. The config flow uses the result to decide whether to proceed to
+    the next step or show an error.
+
+    Raises:
+        :class:`~dominionsc.MfaChallenge`: TFA is required. The caller should
+            transition to the ``tfa_options`` step. The exception carries the
+            :class:`~dominionsc.DominionSCTFAHandler` needed for the TFA steps.
+        :class:`~dominionsc.InvalidAuth`: Username or password is wrong.
+        :class:`~dominionsc.CannotConnect`: Network error.
+        :class:`~dominionsc.ApiException`: Unexpected API response structure.
+
+    Args:
+        hass: The Home Assistant instance (used to get the aiohttp session).
+        data: Dict containing at minimum ``CONF_USERNAME`` and
+              ``CONF_PASSWORD``. May also contain ``CONF_LOGIN_DATA`` (the
+              cached TFA session token from a prior successful TFA submission).
+
+    """
     api = DominionSC(
         async_create_clientsession(hass, cookie_jar=create_cookie_jar()),
         data[CONF_USERNAME],
         data[CONF_PASSWORD],
-        # CONF_LOGIN_DATA holds a cached TFA session token from a prior successful
-        # TFA submission. Passing it lets the API skip TFA on subsequent logins.
-        # It is None on the very first login.
+        # CONF_LOGIN_DATA holds a cached TFA session token from a prior
+        # successful TFA submission. Passing it lets the API skip TFA on
+        # subsequent logins. It is None on the very first login attempt.
         data.get(CONF_LOGIN_DATA),
     )
     _LOGGER.debug("API: async_login")
@@ -81,30 +128,63 @@ async def _validate_login(
 
 class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     """
-    Handle a config flow for dominionsc.
+    Handle the initial config flow for dominionsc.
 
-    Guides the user through credentials, optional TFA, backfill preferences,
-    and cost-mode selection before creating the config entry.
+    Guides the user through:
+    1. Credentials entry (username + password).
+    2. Optional TFA delivery-method selection and code entry.
+    3. Backfill preferences (how far back to load consumption data).
+    4. Cost-mode selection (tiered rate schedule, fixed rate, or none).
+
+    State is accumulated in ``_data`` (for ``entry.data`` — credentials) and
+    ``_options`` (for ``entry.options`` — user preferences) across steps and
+    written to the config entry in :meth:`_async_create_dominionsc_entry`.
+
+    ``VERSION = 1``: bump this if ``entry.data`` schema changes in a way that
+    requires a migration step (see HA migration docs).
     """
 
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize a new DominionSCConfigFlow."""
+        """Initialise flow state for a new config-flow session."""
+        # Accumulates credentials (username, password, login_data).
+        # Written to entry.data at the end of the flow.
         self._data: dict[str, Any] = {}
+        # Accumulates user preferences (backfill flags, cost mode, fixed rate).
+        # Written to entry.options at the end of the flow.
         self._options: dict[str, Any] = {}
+        # Holds the TFA handler returned by MfaChallenge so tfa_options and
+        # tfa_code steps can use it. None when TFA is not required.
         self.tfa_handler: DominionSCTFAHandler | None = None
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for this handler."""
+        """
+        Return the options flow handler for this integration.
+
+        Called by HA when the user clicks "Configure" on an existing entry.
+        Returns a :class:`~.options_flow.DominionSCOptionsFlow` instance which
+        handles cost-mode changes and historic cost recalculation.
+        """
         return DominionSCOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial step (credentials)."""
+        """
+        Step 1: Collect username and password.
+
+        On first call (``user_input`` is ``None``) renders a form with username
+        and password fields. On submission, attempts a login:
+        - If MFA is required, transitions to ``tfa_options``.
+        - If credentials are invalid, re-renders the form with an error.
+        - If login succeeds (no MFA), transitions to ``backfill_options``.
+
+        Also aborts if an entry for the same username already exists, preventing
+        duplicate integrations.
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -150,7 +230,16 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_tfa_options(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle TFA options step."""
+        """
+        Step 2a: Let user select how to receive the TFA code.
+
+        The Dominion API may support multiple delivery methods (SMS, email,
+        etc.). If the API returns an empty list (only one method available),
+        skips this step and jumps straight to ``tfa_code``.
+
+        On method selection, sends the code to the chosen destination and
+        transitions to ``tfa_code``.
+        """
         errors: dict[str, str] = {}
         assert self.tfa_handler is not None
 
@@ -198,7 +287,18 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_tfa_code(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle TFA code submission step."""
+        """
+        Step 2b: Collect the TFA code entered by the user.
+
+        On successful code submission the library returns a session token
+        (``login_data``) which is stored in ``_data[CONF_LOGIN_DATA]``. This
+        token is persisted in ``entry.data`` and passed to the API on every
+        subsequent login, allowing the coordinator to re-authenticate every
+        12 hours without prompting the user for another TFA code.
+
+        If this is a re-authentication flow, ends here (no backfill/cost-mode
+        steps needed — those settings already exist in the entry's options).
+        """
         assert self.tfa_handler is not None
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -235,7 +335,20 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_backfill_options(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask user if they want to backfill up to 365 days of data."""
+        """
+        Step 3: Ask whether to backfill up to 365 days of consumption history.
+
+        Presents two boolean toggles:
+        - ``CONF_EXTENDED_BACKFILL``: seed up to 365 days of consumption data.
+        - ``CONF_EXTENDED_COST_BACKFILL``: also calculate cost for that range.
+
+        Validation rule: cost backfill requires consumption backfill (cost is
+        derived from consumption data). If the user enables cost-only backfill,
+        an error is shown.
+
+        Selected flags are stored in ``_options`` (not ``_data``) because they
+        are user preferences that can be changed later, not credentials.
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -268,7 +381,17 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_cost_mode(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Select cost calculation mode during initial setup."""
+        """
+        Step 4: Select cost calculation mode.
+
+        Presents a dropdown with all available cost modes (from
+        :func:`~.rates.build_cost_mode_choices`). The default is Rate 8
+        (Dominion's standard residential rate).
+
+        - If ``COST_MODE_FIXED`` is selected, continues to
+          ``cost_mode_fixed_rate`` to collect the custom rate.
+        - For all other modes, creates the config entry immediately.
+        """
         if user_input is not None:
             mode = user_input[CONF_COST_MODE]
             if mode == COST_MODE_FIXED:
@@ -292,7 +415,13 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_cost_mode_fixed_rate(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Configure a custom fixed rate during initial setup."""
+        """
+        Step 4a: Collect the custom $/kWh rate for fixed-rate mode.
+
+        Only reached when the user chose ``COST_MODE_FIXED`` in the previous
+        step. Presents a numeric input pre-filled with ``DEFAULT_FIXED_RATE``.
+        On submission, stores the rate in ``_options`` and creates the entry.
+        """
         if user_input is not None:
             self._options[CONF_COST_MODE] = COST_MODE_FIXED
             self._options[CONF_FIXED_RATE] = user_input[CONF_FIXED_RATE]
@@ -313,7 +442,13 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     def _async_create_dominionsc_entry(
         self, data: dict[str, Any], **kwargs: Any
     ) -> ConfigFlowResult:
-        """Create the config entry."""
+        """
+        Create the config entry from the accumulated data and options.
+
+        Called at the end of every successful config-flow path. The entry
+        title includes the username so the user can distinguish multiple
+        accounts at a glance in the integrations list.
+        """
         return self.async_create_entry(
             title=f"{COMMON_NAME} ({data[CONF_USERNAME]})",
             data=data,
@@ -324,10 +459,20 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
-        """Handle configuration by re-auth."""
+        """
+        Start the re-authentication flow.
+
+        Triggered automatically by HA when the coordinator raises
+        :class:`~homeassistant.exceptions.ConfigEntryAuthFailed` (e.g. when
+        the stored TFA session token has been invalidated on the server side).
+
+        Loads the existing entry's data into ``_data`` so the confirm form
+        can pre-fill the username field, then shows the ``reauth_confirm``
+        form.
+        """
         reauth_entry = self._get_reauth_entry()
-        # Pre-load the existing entry data so the confirm form can pre-fill the
-        # username and so _data is ready if the user proceeds without changes.
+        # Pre-load existing credentials so the confirm form can show the
+        # current username and so _data is ready if the user doesn't change it.
         self._data = dict(reauth_entry.data)
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -337,7 +482,18 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Dialog that informs the user that reauth is required."""
+        """
+        Step 2 of re-auth: collect fresh credentials.
+
+        Presents username and password fields (pre-filled with the stored
+        username). On submission:
+        - If credentials are valid and MFA is not required, updates the entry
+          and reloads the integration.
+        - If MFA is required, transitions to ``tfa_options`` / ``tfa_code``
+          exactly as in the initial setup flow. After TFA completes, the entry
+          is updated and reloaded.
+        - On credential failure, re-renders the form with an error.
+        """
         errors: dict[str, str] = {}
         reauth_entry = self._get_reauth_entry()
 

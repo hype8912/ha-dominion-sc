@@ -1,4 +1,35 @@
-"""Options flow for dominionsc integration."""
+"""
+Options flow for the dominionsc integration.
+
+The options flow lets the user change cost settings after initial setup,
+without needing to remove and re-add the integration.
+
+Flow steps
+----------
+::
+
+    init  (select cost mode)
+     └── COST_MODE_NONE ──────────────────────────────────────────► SAVE (no recalc)
+     └── COST_MODE_FIXED ──► fixed_rate ──► recalculate_history ──► (see below)
+     └── COST_MODE_RATE_* ──────────────► recalculate_history ──► (see below)
+
+    recalculate_history  (ask yes/no)
+     └── No  ────────────────────────────────────────────────────► SAVE
+     └── Yes ──► recalculate_date_range ──────────────────────────► SAVE + fire task
+
+When the user confirms a date range, a background
+:meth:`~.coordinator.DominionSCCoordinator.async_recalculate_historic_costs`
+task is created (non-blocking) and the options are saved immediately. The
+recalculation runs asynchronously and the Energy Dashboard updates once it
+completes.
+
+Concurrency guard
+-----------------
+If a recalculation is already running (``coordinator.recalculation_lock`` is
+held), the ``init`` step shows a blocking error rather than allowing a second
+recalculation to start. This prevents two concurrent recalculations from
+producing duplicate or out-of-order statistics rows.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +56,22 @@ CONF_RECALC_END_DATE = "recalc_end_date"
 
 
 def _cost_mode_label(mode: str) -> str:
-    """Return a human-readable label for a cost mode constant."""
+    """
+    Return a human-readable label for a ``COST_MODE_*`` constant.
+
+    Used to populate the ``description_placeholders`` in the
+    ``recalculate_history`` form so the user can see which rate they are
+    switching from and to.
+
+    Args:
+        mode: A ``COST_MODE_*`` string constant (e.g. ``"rate_8"``).
+
+    Returns:
+        The rate schedule's full name for tiered modes (from the registry), or
+        a short label for ``"none"`` and ``"fixed"``. Falls back to the raw
+        mode string if it is not recognised.
+
+    """
     if mode in TIERED_RATE_REGISTRY:
         return TIERED_RATE_REGISTRY[mode].name
     return {
@@ -35,18 +81,52 @@ def _cost_mode_label(mode: str) -> str:
 
 
 class DominionSCOptionsFlow(OptionsFlow):
-    """Handle options flow for Dominion Energy SC."""
+    """
+    Handle post-install options for the Dominion Energy SC integration.
+
+    Accessed via the "Configure" button on the integration card in the UI.
+    Allows the user to:
+    - Switch between cost calculation modes (Rate 8, Rate 6, Fixed, None).
+    - Enter a custom $/kWh rate for fixed-rate mode.
+    - Optionally recalculate historical cost statistics for a chosen date range
+      using the new rate.
+    """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
+        """
+        Initialise the options flow.
+
+        Args:
+            config_entry: The existing config entry being configured. Its
+                          current ``options`` dict is used to pre-fill form
+                          defaults so the user sees their current settings.
+
+        """
         self._config_entry = config_entry
+        # Stores the mode chosen in async_step_init (needed by later steps).
         self._selected_mode: str | None = None
+        # Accumulates the new options to be saved when the flow completes.
         self._new_options: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: Select cost calculation mode."""
+        """
+        Step 1: Select cost calculation mode.
+
+        Entry point for the options flow. Pre-fills the dropdown with the
+        currently stored cost mode.
+
+        On submission:
+        - ``COST_MODE_NONE`` -> saves immediately (no further steps needed).
+        - ``COST_MODE_FIXED`` -> continues to ``fixed_rate``.
+        - Tiered mode (``COST_MODE_RATE_*``) -> continues to
+          ``recalculate_history``.
+
+        Blocks all changes (with an error message) if a background
+        recalculation is currently running to prevent concurrent writes to the
+        statistics table.
+        """
         # Guard: block changes while a background recalculation is running.
         coordinator = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id)
         if coordinator is not None and coordinator.recalculation_lock.locked():
@@ -88,7 +168,14 @@ class DominionSCOptionsFlow(OptionsFlow):
     async def async_step_fixed_rate(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2a: Configure fixed rate."""
+        """
+        Step 2a: Collect the custom $/kWh rate for fixed-rate mode.
+
+        Only reached when the user selected ``COST_MODE_FIXED`` in
+        ``async_step_init``. Pre-fills the current stored fixed rate (or the
+        default if none is stored). After submission, proceeds to
+        ``recalculate_history`` so the user can apply the new rate to history.
+        """
         if user_input is not None:
             self._new_options[CONF_COST_MODE] = COST_MODE_FIXED
             self._new_options[CONF_FIXED_RATE] = user_input[CONF_FIXED_RATE]
@@ -113,7 +200,17 @@ class DominionSCOptionsFlow(OptionsFlow):
     async def async_step_recalculate_history(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 3: Ask if the user wants to recalculate historic cost records."""
+        """
+        Step 3: Ask whether to recalculate historic cost records.
+
+        Shows a yes/no toggle pre-set to ``True`` when the cost mode has
+        changed (a changed rate almost always means old cost data is wrong).
+        The form description shows the old and new mode names so the user
+        understands what they are confirming.
+
+        - ``No``  -> saves options and ends the flow.
+        - ``Yes`` -> continues to ``recalculate_date_range``.
+        """
         if user_input is not None:
             if user_input.get(CONF_RECALCULATE_HISTORY, False):
                 return await self.async_step_recalculate_date_range()
@@ -143,7 +240,24 @@ class DominionSCOptionsFlow(OptionsFlow):
     async def async_step_recalculate_date_range(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 4: Select the date range for historic recalculation."""
+        """
+        Step 4: Select the start and end dates for historic cost recalculation.
+
+        Collects ISO-format date strings (YYYY-MM-DD) for the recalculation
+        window. Default start date is the first day of the current month;
+        default end date is yesterday (today's data is never complete).
+
+        Validation:
+        - Both values must parse as valid ISO dates.
+        - ``end_date`` must not be before ``start_date``.
+        - ``end_date`` must not be in the future (no API data exists yet).
+
+        On success, creates a background asyncio task via
+        :meth:`~.coordinator.DominionSCCoordinator.async_recalculate_historic_costs`
+        and immediately saves the options (the flow does not wait for the
+        recalculation to complete). The Energy Dashboard will update once the
+        background task finishes writing the new statistics rows.
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:

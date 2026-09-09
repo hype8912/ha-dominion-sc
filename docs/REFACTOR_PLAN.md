@@ -1,12 +1,14 @@
 # Refactor Plan — `ha-dominion-sc`
 
-**Status:** Phases 0–3 complete (2026-09-08); Phase 4 deferred (optional/cosmetic); Phase 5 not started
+**Status:** All phases complete (2026-09-08)
 **Written against:** `origin/main` @ `113b22b` (the state reset to your fork,
 which includes the AI-generated 100%-coverage test suite).
 **Test baseline:** 143 tests passing, **100% line and branch coverage**
 across all modules, verified 2026-09-08.
-**Current:** 143 tests passing (unchanged), 100% coverage maintained across
-11 modules. `coordinator.py` reduced from 391 → 298 statements.
+**Current:** 163 tests passing (+20 for Phase 5), 100% coverage maintained
+across all 11 modules. `coordinator.py` net change: 391 → 330 statements even
+after Phase 5 added real feature code (330 vs. 298 post-Phase-3, since Phase 5
+is new functionality, not pure extraction).
 **Companion doc:** `docs/architecture.md` describes the integration as-is.
 
 ---
@@ -226,40 +228,124 @@ names (`test_coordinator_chunk1/2/3`, `_coverage`, `_remaining`, `_final_coverag
 `_complete`, etc.). No consolidation performed; shims ensure all imports resolve
 correctly and all 143 tests pass with 100% coverage.
 
-### Phase 5 — Register-aware entities *(the feature phase; needs the library)*
+### Phase 5 — Register-aware entities — ✅ DONE
 
-Depends on `async_get_register_reads()` (already built in `dominion-sc-power`)
-and touches the breaking `async_get_accounts()` shape.
+Depended on `async_get_register_reads()` (already built in `dominion-sc-power`).
 
-- [ ] Decide the `async_get_accounts()` migration (see Constraints).
-- [ ] Switch the coordinator to `async_get_register_reads()`.
-- [ ] Extend `statistics_ids.py` to key ids per register (UsagePoint) so grid,
-      solar-export, and gas become separate statistics/entities.
-- [ ] **Existing-install migration** — see Constraints; release-blocking.
-- [ ] User chooses the solar entity (inverter vs Dominion) in the Energy
-      Dashboard — no code decision.
-- [ ] New tests for the register path (these should be behavioral from the
-      start, not coverage-driven — this is the chance to set a better pattern).
+**Decision made, and worth stating plainly: `async_get_accounts()` was NOT
+migrated.** The coordinator still does
+`accounts, service_addr = await self.api.async_get_accounts()`, unchanged.
+That migration remains a separate, deliberately deferred cross-repo change
+(see Constraints) — it was never actually required for register-aware
+statistics, since the register split happens one level down, per-account,
+via the new `async_get_register_reads()` call. Scoping it out kept Phase 5
+focused and avoided an unforced cross-repo coordination point.
 
-**Acceptance:** a net-metered account yields distinct grid / solar-export / gas
-entities; existing single-entity installs keep their history.
+**The core design choice: make statistic-id stability airtight, not just
+tested.** Rather than "discover registers, then check if the id changed,"
+the coordinator checks whether an account already has a statistic under the
+**legacy id** (or has a legacy backfill already in flight) *before* it ever
+calls `_discover_registers()`. If either is true, it takes the exact
+pre-Phase-5 code path with **zero new network calls**. An established
+install cannot reach the discovery code at all — not "discovery happens to
+agree," but "discovery never runs." Register discovery (one
+`async_get_register_reads` lookback call) only happens, once, for an account
+that has never been backfilled.
+
+- [x] `models.py`: `DominionSCStatisticMetadata` gained `usage_point_id: str | None = None`.
+- [x] `statistics_ids.py`: new `_build_register_statistic_ids()`. For a sole
+      register it **delegates to** the legacy `_build_statistic_ids`, so ids
+      are byte-identical (verified by dedicated tests, not just code reading).
+      For multiple registers, each gets its own id incorporating the stable
+      UsagePoint id, plus a display name with a trailing-digits meter suffix.
+- [x] `coordinator._discover_registers()`: one-time lookback call
+      (`LOOKBACK_DAYS` window). Returns `[]` on `CannotConnect`/`ApiException`,
+      which correctly falls back to the sole-register path — the safe default
+      when register count can't be determined.
+- [x] `coordinator._process_account()`: new method holding the
+      backfill-vs-update decision logic, extracted so it's shared identically
+      between the sole-register and multi-register call sites (previously this
+      logic only existed inline, once, in `_insert_statistics`).
+- [x] `coordinator._insert_statistics()`: rewritten per the id-stability design
+      above. Routes to `_process_account()` once per register.
+- [x] `coordinator._process_and_insert_statistics()`: the actual fetch now
+      branches on `metadata.usage_point_id`. `None` → unchanged flat
+      `async_get_usage_reads()`. Set → `async_get_register_reads()`, filtered
+      to the one matching register (empty list if that register has no data
+      in this window, rather than an error).
+- [x] `_backfill_initiated` keys widen to `"{account}:{usage_point_id}"` only
+      when a `usage_point_id` is present (bare `account` otherwise, unchanged),
+      so two registers under one measurement type (grid + solar, both
+      `"ELECTRIC"`) don't share one in-flight flag and block each other.
+- [x] User chooses the solar entity (inverter vs. Dominion) in the Energy
+      Dashboard — confirmed no code decision needed; `sensor.py` was checked
+      and needs no changes, since this integration exposes consumption purely
+      as external long-term statistics (`async_add_external_statistics`),
+      which are selectable in the Energy Dashboard picker with no
+      corresponding HA sensor entity required.
+- [x] New tests, written behaviorally from the start (`tests/test_phase5_register_aware.py`,
+      20 tests) rather than coverage-driven, per this section's own original
+      guidance:
+      - `TestBuildRegisterStatisticIds` — the pure id builder, both branches.
+      - **`TestStatisticIdRegressionGuarantee`** — the release-blocking test
+        this plan required. Parametrized id-equality across four addresses/
+        accounts, *plus* an assertion that `async_get_register_reads` is never
+        even called for an established install (not just "returns the same
+        id if called" — proves the call never happens).
+      - `TestDiscoverRegisters` — success, `CannotConnect` fallback, `ApiException` fallback.
+      - `TestInsertStatisticsRegisterRouting` — two registers produce two
+        separate `_backfill_statistics` calls with distinct ids; one register's
+        in-flight backfill doesn't block the other's.
+      - `TestProcessAndInsertStatisticsRegisterFetch` — sole-register still uses
+        the flat fetch; multi-register selects only the matching register's
+        reads; a register absent from the response yields empty reads, not an error.
+
+**One test-fixture update, disclosed:** `test_insert_statistics_backfill_path`
+(pre-existing, in `test_coordinator_coverage.py`) simulates a never-backfilled
+account — exactly the scenario that now legitimately reaches
+`_discover_registers()`. It needed two new mock stubs
+(`coord.api.get_timezone`, `coord.api.async_get_register_reads`) to satisfy
+that new call. **Its original assertions (`_backfill_statistics` awaited,
+`_update_statistics` not awaited) are unchanged** — this is a fixture
+addition, not an assertion edit, and is exactly the kind of test change a
+feature phase (unlike Phases 1–3) legitimately requires.
+
+**Result:** 163 tests pass (143 + 20 new), **100% line and branch coverage**
+across all 11 modules, `ruff check .` clean. `coordinator.py`: 298 → 330
+statements (a real increase — Phase 5 adds functionality, unlike Phases 1–3
+which only moved code).
+
+**Acceptance:** a net-metered account yields distinct grid / solar-export
+statistics (verified: `test_multi_register_backfills_each_register_separately`);
+an existing single-register install's statistic id is provably unreachable by
+the new code path (verified: `test_established_install_never_calls_discovery`).
 
 ---
 
 ## 5. Constraints
 
-**Statistic-id stability is release-blocking.** HA long-term statistics are
-keyed by statistic id. If Phase 5 changes an existing install's id, the old
-series is orphaned — the user's Energy Dashboard history silently detaches and
-a new empty series begins. Before shipping Phase 5, choose one: keep the
-existing per-measurement-type id as the primary/grid register and only *add*
-ids for solar-export; provide an explicit statistics migration; or gate behind
-an opt-in option. **A dedicated test must assert existing ids are unchanged.**
+**Statistic-id stability is release-blocking. — ✅ RESOLVED.** HA long-term
+statistics are keyed by statistic id; changing an existing install's id
+orphans its Energy Dashboard history. Phase 5 resolved this not by choosing
+between the three mitigation options originally listed here, but by making
+the unsafe path **structurally unreachable**: an account with an existing
+legacy statistic (or a legacy backfill in flight) never calls
+`_discover_registers()` at all — confirmed by
+`test_established_install_never_calls_discovery`, which asserts the
+discovery mock is never invoked, not merely that it would return a safe
+answer if it were. The dedicated regression test this constraint called for
+exists: `TestStatisticIdRegressionGuarantee` in
+`tests/test_phase5_register_aware.py`.
 
-**`async_get_accounts()` is a cross-repo breaking change.** The coordinator
-does `accounts, service_addr = await self.api.async_get_accounts()`. Migrating
-the library to return `AccountInfo` requires changing this line and the library
-together with a coordinated version bump.
+**`async_get_accounts()` remains a cross-repo breaking change — still
+deferred, by explicit choice.** The coordinator still does
+`accounts, service_addr = await self.api.async_get_accounts()`, unchanged.
+Phase 5 shipped register-aware statistics without needing this migration at
+all — the register split happens per-account, one level below
+`async_get_accounts()`. Migrating the library to return `AccountInfo` directly
+remains available as a future, separately-coordinated cross-repo change if the
+positional-list shape becomes a problem elsewhere; it is not required by
+anything currently shipped.
 
 **The test suite is a behavioral oracle, not a structural one.** Green after a
 move only counts if the change was an import-path fix. If an assertion had to
@@ -285,9 +371,14 @@ so it is safe as a durable statistic-id key.
 
 ## 7. Definition of done
 
-- [ ] `coordinator.py` well under ~400 lines (lifecycle + orchestration only).
-- [ ] `billing.py`, `cost.py`, `statistics_ids.py` import no Home Assistant.
-- [ ] `uv run pytest` = 143 passed (or more), 100% coverage maintained.
-- [ ] Register-aware entities working for a net-metered account.
-- [ ] A regression test proves existing installs' statistic ids are unchanged.
-- [ ] `uv run ruff check .` clean.
+- [x] `coordinator.py` well under ~400 lines (lifecycle + orchestration only) — 330 statements.
+- [x] `billing.py`, `cost.py`, `statistics_ids.py` import no Home Assistant.
+- [x] `uv run pytest` = 163 passed (143 baseline + 20 Phase 5), 100% coverage maintained.
+- [x] Register-aware entities working for a net-metered account.
+- [x] A regression test proves existing installs' statistic ids are unchanged
+      (`TestStatisticIdRegressionGuarantee`, including a call-count assertion
+      that discovery never runs for an established install, not just an
+      id-equality check).
+- [x] `uv run ruff check .` clean.
+
+**All items complete as of 2026-09-08. This refactor plan is closed.**

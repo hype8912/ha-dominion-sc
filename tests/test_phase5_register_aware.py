@@ -325,9 +325,7 @@ class TestInsertStatisticsRegisterRouting:
                 return_value=recorder,
             ),
         ):
-            await coord._insert_statistics(
-                ["ELECTRIC"], "123 Main", self._forecast()
-            )
+            await coord._insert_statistics(["ELECTRIC"], "123 Main", self._forecast())
 
         assert len(seen_metadata) == 2
         seen_usage_points = {m.usage_point_id for m in seen_metadata}
@@ -370,9 +368,7 @@ class TestInsertStatisticsRegisterRouting:
                 return_value=recorder,
             ),
         ):
-            await coord._insert_statistics(
-                ["ELECTRIC"], "123 Main", self._forecast()
-            )
+            await coord._insert_statistics(["ELECTRIC"], "123 Main", self._forecast())
 
         # GRID_UP was skipped (backfill in flight); SOLAR_UP proceeded.
         assert called_for == ["SOLAR_UP"]

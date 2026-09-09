@@ -281,9 +281,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             else VolumeConverter.UNIT_CLASS
         )
         consumption_unit = (
-            UnitOfEnergy.WATT_HOUR
-            if account == "ELECTRIC"
-            else UnitOfVolume.CUBIC_FEET
+            UnitOfEnergy.WATT_HOUR if account == "ELECTRIC" else UnitOfVolume.CUBIC_FEET
         )
 
         # Check if we have existing statistics
@@ -316,8 +314,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             if self._backfill_initiated.get(backfill_key, False):
                 # Backfill was already started, waiting for recorder to commit
                 _LOGGER.debug(
-                    "Backfill already initiated for %s, "
-                    "waiting for recorder to commit",
+                    "Backfill already initiated for %s, waiting for recorder to commit",
                     consumption_statistic_id,
                 )
                 return

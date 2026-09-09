@@ -10,13 +10,9 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dominionsc.config_flow import (
-    CONF_RECALC_END_DATE,
-    CONF_RECALC_START_DATE,
-    CONF_RECALCULATE_HISTORY,
     CONF_TFA_CODE,
     CONF_TFA_METHOD,
     DominionSCConfigFlow,
-    DominionSCOptionsFlow,
     _validate_login,
 )
 from custom_components.dominionsc.const import (
@@ -30,6 +26,12 @@ from custom_components.dominionsc.const import (
     COST_MODE_RATE_6,
     COST_MODE_RATE_8,
     DOMAIN,
+)
+from custom_components.dominionsc.options_flow import (
+    CONF_RECALC_END_DATE,
+    CONF_RECALC_START_DATE,
+    CONF_RECALCULATE_HISTORY,
+    DominionSCOptionsFlow,
 )
 
 # ---------------------------------------------------------------------------

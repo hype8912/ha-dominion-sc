@@ -31,6 +31,13 @@ dev = [
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
+# Development wiring: resolve dominion-sc-power from the local sibling checkout
+# (which carries the register-aware API not yet published to PyPI) rather than
+# the pinned PyPI release. Affects uv sync / tests only. The live Home Assistant
+# install is governed by custom_components/dominionsc/manifest.json requirements.
+[tool.uv.sources]
+dominion-sc-power = { path = "../dominion-sc-power", editable = true }
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["custom_components"]

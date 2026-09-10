@@ -44,12 +44,11 @@ See docs/REFACTOR_PLAN.md Phase 3.
 import logging
 from datetime import date, datetime
 
-from dominionsc import Forecast
+from dominionsc import Forecast, RatePlan
 
 from .billing import _estimate_billing_cycles, _find_billing_cycle_for_date
 from .cost import _calculate_cost_for_wh
 from .models import DominionSCStatisticMetadata
-from .rates import RateSchedule
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ def aggregate_hourly_data(
     is_electric: bool,
     cost_mode: str,
     fixed_rate: float,
-    rate_schedule: RateSchedule | None,
+    rate_plan: RatePlan | None,
     is_tiered_rate: bool,
     cost_start_date: date | None = None,
     existing_hours: set[datetime] | None = None,
@@ -100,11 +99,11 @@ def aggregate_hourly_data(
         cost_mode:      One of the ``COST_MODE_*`` constants. Passed through
                         to :func:`~.cost._calculate_cost_for_wh`.
         fixed_rate:     $/kWh rate for COST_MODE_FIXED. Ignored otherwise.
-        rate_schedule:  :class:`~.rates.RateSchedule` for tiered modes, or
+        rate_plan:      :class:`~dominionsc.RatePlan` for tiered modes, or
                         ``None``. Passed through to
                         :func:`~.cost._calculate_cost_for_wh`.
         is_tiered_rate: ``True`` when ``cost_mode`` maps to an entry in
-                        :data:`~.rates.TIERED_RATE_REGISTRY`. Controls whether
+                        :data:`~.rates.RATE_PLAN_REGISTRY`. Controls whether
                         billing-cycle boundary tracking is active.
         cost_start_date: When set, cost rows are only produced for intervals on
                         or after this date. Used when consumption backfill is
@@ -202,7 +201,7 @@ def aggregate_hourly_data(
                 cumulative_wh,
                 cost_mode,
                 fixed_rate,
-                rate_schedule,
+                rate_plan,
             )
             # Advance the cumulative counter AFTER pricing so the cost
             # function receives the Wh total *before* this interval.

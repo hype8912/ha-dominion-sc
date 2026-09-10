@@ -115,7 +115,7 @@ from .models import (
     DominionSCData,
     DominionSCStatisticMetadata,
 )
-from .rates import TIERED_RATE_REGISTRY
+from .rates import RATE_PLAN_REGISTRY
 from .statistics_ids import _build_register_statistic_ids, _build_statistic_ids
 
 _LOGGER = logging.getLogger(__name__)
@@ -972,10 +972,10 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             ``(hourly_consumption, hourly_cost)`` dicts keyed by hour start.
 
         """
-        cost_mode_here, fixed_rate_here, rate_schedule_here = _resolve_cost_config(
+        cost_mode_here, fixed_rate_here, rate_plan_here = _resolve_cost_config(
             self.config_entry.options
         )
-        is_tiered_rate = cost_mode_here in TIERED_RATE_REGISTRY
+        is_tiered_rate = cost_mode_here in RATE_PLAN_REGISTRY
         return aggregate_hourly_data(
             usage_reads=usage_reads,
             metadata=metadata,
@@ -984,7 +984,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             is_electric=is_electric,
             cost_mode=cost_mode_here,
             fixed_rate=fixed_rate_here,
-            rate_schedule=rate_schedule_here,
+            rate_plan=rate_plan_here,
             is_tiered_rate=is_tiered_rate,
             cost_start_date=cost_start_date,
             existing_hours=existing_hours,
@@ -1289,12 +1289,12 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             new_options: Options dict containing the new cost mode and rate.
 
         """
-        new_cost_mode, new_fixed_rate, rate_schedule = _resolve_cost_config(new_options)
+        new_cost_mode, new_fixed_rate, rate_plan = _resolve_cost_config(new_options)
         if new_cost_mode == COST_MODE_NONE:
             _LOGGER.info("New cost mode is NONE; skipping recalculation.")
             return
 
-        is_tiered = new_cost_mode in TIERED_RATE_REGISTRY
+        is_tiered = new_cost_mode in RATE_PLAN_REGISTRY
 
         _LOGGER.info(
             "Starting historic cost recalculation from %s to %s (mode: %s)",
@@ -1401,7 +1401,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                 cumulative_wh,
                 new_cost_mode,
                 new_fixed_rate,
-                rate_schedule,
+                rate_plan,
             )
             cumulative_wh += interval_wh
 

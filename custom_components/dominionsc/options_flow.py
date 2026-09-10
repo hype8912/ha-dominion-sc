@@ -48,7 +48,7 @@ from .const import (
     DEFAULT_FIXED_RATE,
     DOMAIN,
 )
-from .rates import TIERED_RATE_REGISTRY, build_cost_mode_choices
+from .rates import RATE_PLAN_REGISTRY, build_cost_mode_choices
 
 CONF_RECALCULATE_HISTORY = "recalculate_history"
 CONF_RECALC_START_DATE = "recalc_start_date"
@@ -72,8 +72,8 @@ def _cost_mode_label(mode: str) -> str:
         mode string if it is not recognised.
 
     """
-    if mode in TIERED_RATE_REGISTRY:
-        return TIERED_RATE_REGISTRY[mode].name
+    if mode in RATE_PLAN_REGISTRY:
+        return RATE_PLAN_REGISTRY[mode].name
     return {
         COST_MODE_NONE: "None",
         COST_MODE_FIXED: "Fixed Rate",
@@ -141,7 +141,7 @@ class DominionSCOptionsFlow(OptionsFlow):
 
             if self._selected_mode == COST_MODE_FIXED:
                 return await self.async_step_fixed_rate()
-            if self._selected_mode in TIERED_RATE_REGISTRY:
+            if self._selected_mode in RATE_PLAN_REGISTRY:
                 self._new_options[CONF_COST_MODE] = self._selected_mode
                 return await self.async_step_recalculate_history()
             # No cost calculation - skip history recalculation (nothing to calculate)

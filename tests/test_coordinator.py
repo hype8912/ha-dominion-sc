@@ -55,7 +55,7 @@ from custom_components.dominionsc.coordinator import (
     _find_billing_cycle_for_date,
     _resolve_cost_config,
 )
-from custom_components.dominionsc.rates import SC_RATE_8
+from dominionsc import RATE_8
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +122,9 @@ def test_build_statistic_ids_gas() -> None:
 
 
 def test_resolve_cost_config_default() -> None:
-    mode, _rate, sched = _resolve_cost_config({})
+    mode, _rate, plan = _resolve_cost_config({})
     assert mode == COST_MODE_RATE_8
-    assert sched is SC_RATE_8
+    assert plan is RATE_8
 
 
 def test_resolve_cost_config_fixed() -> None:
@@ -156,17 +156,47 @@ def test_cost_fixed() -> None:
 
 
 def test_cost_tiered_before_effective() -> None:
+    # RATE_8.effective_from is 2026-07-01; intervals before that return $0
     assert (
-        _calculate_cost_for_wh(100, datetime(2025, 1, 1), 0, COST_MODE_RATE_8, 0, SC_RATE_8)
+        _calculate_cost_for_wh(100, datetime(2026, 6, 30), 0, COST_MODE_RATE_8, 0, RATE_8)
         == 0.0
     )
 
 
 def test_cost_tiered_after_effective() -> None:
     assert (
-        _calculate_cost_for_wh(100, datetime(2025, 8, 1), 0, COST_MODE_RATE_8, 0, SC_RATE_8)
+        _calculate_cost_for_wh(100, datetime(2026, 8, 1), 0, COST_MODE_RATE_8, 0, RATE_8)
         > 0
     )
+
+
+def test_cost_tiered_all_over_boundary() -> None:
+    # cumulative_before well above the 800 kWh (800_000 Wh) boundary → upper tier
+    # RATE_8 summer over-800 rate: $0.17442/kWh = 0.00017442 $/Wh
+    result = _calculate_cost_for_wh(
+        1000, datetime(2026, 8, 1), 900_000, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert abs(result - 1000 * 0.17442 / 1000) < 1e-9
+
+
+def test_cost_tiered_straddles_boundary() -> None:
+    # cumulative_before=799_000 Wh, interval=2000 Wh → crosses 800_000 Wh boundary
+    # 1000 Wh at lower tier ($0.15878/kWh), 1000 Wh at upper tier ($0.17442/kWh)
+    result = _calculate_cost_for_wh(
+        2000, datetime(2026, 8, 1), 799_000, COST_MODE_RATE_8, 0, RATE_8
+    )
+    expected = 1000 * 0.15878 / 1000 + 1000 * 0.17442 / 1000
+    assert abs(result - expected) < 1e-9
+
+
+def test_cost_tiered_no_tiered_charge_returns_zero() -> None:
+    # A RatePlan with no TieredUsageCharge hits the defensive return 0.0 path.
+    from dominionsc import RATE_2
+
+    from custom_components.dominionsc.cost import _calculate_tiered_cost
+
+    result = _calculate_tiered_cost(1000, datetime(2026, 8, 1), 0, RATE_2)
+    assert result == 0.0
 
 
 def test_cost_unknown_mode_returns_zero() -> None:

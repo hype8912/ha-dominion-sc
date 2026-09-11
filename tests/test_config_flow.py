@@ -13,6 +13,7 @@ from custom_components.dominionsc.config_flow import (
     CONF_TFA_CODE,
     CONF_TFA_METHOD,
     DominionSCConfigFlow,
+    _fetch_accounts,
     _validate_login,
 )
 from custom_components.dominionsc.const import (
@@ -20,9 +21,11 @@ from custom_components.dominionsc.const import (
     CONF_EXTENDED_BACKFILL,
     CONF_EXTENDED_COST_BACKFILL,
     CONF_FIXED_RATE,
+    CONF_GAS_COST_MODE,
     CONF_LOGIN_DATA,
     COST_MODE_FIXED,
     COST_MODE_NONE,
+    COST_MODE_RATE_32S,
     COST_MODE_RATE_6,
     COST_MODE_RATE_8,
     DOMAIN,
@@ -1031,3 +1034,202 @@ def test_async_get_options_flow(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(domain=DOMAIN, data={})
     flow = DominionSCConfigFlow.async_get_options_flow(entry)
     assert isinstance(flow, DominionSCOptionsFlow)
+
+
+# ---------------------------------------------------------------------------
+# Config flow — Phase 6: gas cost mode step
+# ---------------------------------------------------------------------------
+
+
+async def _login_to_cost_mode_with_gas(
+    hass: HomeAssistant,
+    user_input: dict,
+    mock_api: MagicMock,
+) -> dict:
+    """Like _login_to_cost_mode but sets mock to return ELECTRIC + GAS accounts."""
+    mock_api.async_get_accounts.return_value = (["ELECTRIC", "GAS"], "addr_123")
+    result = await _login_to_backfill(hass, user_input)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EXTENDED_BACKFILL: False, CONF_EXTENDED_COST_BACKFILL: False},
+    )
+    assert result["step_id"] == "cost_mode"
+    return result
+
+
+async def test_gas_cost_mode_step_shown_when_gas_account_present(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """When GAS account is detected, gas_cost_mode step appears after cost_mode."""
+    result = await _login_to_cost_mode_with_gas(hass, user_input, mock_dominionsc_api)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "gas_cost_mode"
+
+
+async def test_gas_cost_mode_step_skipped_when_no_gas_account(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """When only ELECTRIC account exists, gas_cost_mode step is skipped."""
+    result = await _login_to_cost_mode(hass, user_input)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_GAS_COST_MODE not in result["options"]
+
+
+async def test_gas_cost_mode_rate_32s_selection(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Selecting Rate 32S in gas step saves CONF_GAS_COST_MODE = 'rate_32s'."""
+    result = await _login_to_cost_mode_with_gas(hass, user_input, mock_dominionsc_api)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8}
+    )
+    assert result["step_id"] == "gas_cost_mode"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_GAS_COST_MODE: COST_MODE_RATE_32S}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"][CONF_GAS_COST_MODE] == COST_MODE_RATE_32S
+    assert result["options"][CONF_COST_MODE] == COST_MODE_RATE_8
+
+
+async def test_gas_cost_mode_default_none(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Selecting None in gas step saves CONF_GAS_COST_MODE = 'none'."""
+    result = await _login_to_cost_mode_with_gas(hass, user_input, mock_dominionsc_api)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_NONE}
+    )
+    assert result["step_id"] == "gas_cost_mode"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_GAS_COST_MODE: COST_MODE_NONE}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"][CONF_GAS_COST_MODE] == COST_MODE_NONE
+
+
+async def test_gas_cost_mode_shown_after_fixed_rate(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Fixed rate + gas account: gas_cost_mode step shown after cost_mode_fixed_rate."""
+    result = await _login_to_cost_mode_with_gas(hass, user_input, mock_dominionsc_api)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_FIXED}
+    )
+    assert result["step_id"] == "cost_mode_fixed_rate"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_FIXED_RATE: 0.12}
+    )
+    assert result["step_id"] == "gas_cost_mode"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_GAS_COST_MODE: COST_MODE_RATE_32S}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"][CONF_COST_MODE] == COST_MODE_FIXED
+    assert result["options"][CONF_FIXED_RATE] == 0.12
+    assert result["options"][CONF_GAS_COST_MODE] == COST_MODE_RATE_32S
+
+
+# ---------------------------------------------------------------------------
+# Options flow — Phase 6: gas cost mode field
+# ---------------------------------------------------------------------------
+
+
+async def test_options_flow_with_gas_account_shows_gas_field(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Options init shows gas_cost_mode field when coordinator has GAS account."""
+    from custom_components.dominionsc.models import DominionSCData, DominionSCAccountData
+    from unittest.mock import MagicMock
+
+    entry = _make_entry(hass, user_input)
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.recalculation_lock.locked.return_value = False
+    mock_coordinator.data = MagicMock()
+    mock_coordinator.data.accounts = {"ELECTRIC": MagicMock(), "GAS": MagicMock()}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mock_coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    # The schema should include CONF_GAS_COST_MODE
+    schema_keys = [str(k) for k in result["data_schema"].schema]
+    assert any(CONF_GAS_COST_MODE in k for k in schema_keys)
+
+
+async def test_options_flow_gas_mode_rate_32s_saved(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Gas cost mode selection in options flow is persisted."""
+    entry = _make_entry(hass, user_input)
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.recalculation_lock.locked.return_value = False
+    mock_coordinator.data = MagicMock()
+    mock_coordinator.data.accounts = {"ELECTRIC": MagicMock(), "GAS": MagicMock()}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mock_coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_GAS_COST_MODE] == COST_MODE_RATE_32S
+    assert result["data"][CONF_COST_MODE] == COST_MODE_NONE
+
+
+async def test_fetch_accounts_returns_empty_on_api_error(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+) -> None:
+    """_fetch_accounts returns [] when async_get_accounts raises CannotConnect."""
+    from dominionsc.exceptions import CannotConnect
+
+    mock_dominionsc_api.async_get_accounts.side_effect = CannotConnect("error")
+    result = await _fetch_accounts(
+        hass, {CONF_USERNAME: "user", CONF_PASSWORD: "pass"}
+    )
+    assert result == []

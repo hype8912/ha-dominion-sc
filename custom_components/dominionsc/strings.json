@@ -56,7 +56,7 @@
       },
       "cost_mode": {
         "title": "Cost Calculation Settings",
-        "description": "Select how energy costs are calculated.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.",
+        "description": "Select how energy costs are calculated.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.",
         "data": {
           "cost_mode": "Cost calculation method"
         },
@@ -84,6 +84,16 @@
         },
         "data_description": {
           "fixed_rate": "Single rate applied to all kWh consumed"
+        }
+      },
+      "gas_cost_mode": {
+        "title": "Gas Cost Calculation",
+        "description": "Select the rate schedule for your gas account cost calculation. Only shown when a gas meter is detected on your account.",
+        "data": {
+          "gas_cost_mode": "Gas Rate Plan"
+        },
+        "data_description": {
+          "gas_cost_mode": "Rate schedule used to calculate gas costs"
         }
       }
     }

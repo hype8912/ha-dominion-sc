@@ -42,13 +42,14 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlowResult, OptionsF
 from .const import (
     CONF_COST_MODE,
     CONF_FIXED_RATE,
+    CONF_GAS_COST_MODE,
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_8,
     DEFAULT_FIXED_RATE,
     DOMAIN,
 )
-from .rates import RATE_PLAN_REGISTRY, build_cost_mode_choices
+from .rates import GAS_RATE_PLAN_REGISTRY, RATE_PLAN_REGISTRY, build_cost_mode_choices, build_gas_cost_mode_choices
 
 CONF_RECALCULATE_HISTORY = "recalculate_history"
 CONF_RECALC_START_DATE = "recalc_start_date"
@@ -123,6 +124,9 @@ class DominionSCOptionsFlow(OptionsFlow):
         - Tiered mode (``COST_MODE_RATE_*``) -> continues to
           ``recalculate_history``.
 
+        When the account has a GAS meter (detected from coordinator data), an
+        additional gas rate selector is shown in the same step.
+
         Blocks all changes (with an error message) if a background
         recalculation is currently running to prevent concurrent writes to the
         statistics table.
@@ -136,8 +140,21 @@ class DominionSCOptionsFlow(OptionsFlow):
                 errors={"base": "recalculation_in_progress"},
             )
 
+        # Determine if a GAS account is present (only possible after first poll).
+        has_gas = (
+            coordinator is not None
+            and coordinator.data is not None
+            and "GAS" in coordinator.data.accounts
+        )
+
         if user_input is not None:
             self._selected_mode = user_input[CONF_COST_MODE]
+
+            # Always capture gas cost mode when GAS is present.
+            if has_gas:
+                self._new_options[CONF_GAS_COST_MODE] = user_input.get(
+                    CONF_GAS_COST_MODE, COST_MODE_NONE
+                )
 
             if self._selected_mode == COST_MODE_FIXED:
                 return await self.async_step_fixed_rate()
@@ -146,23 +163,30 @@ class DominionSCOptionsFlow(OptionsFlow):
                 return await self.async_step_recalculate_history()
             # No cost calculation - skip history recalculation (nothing to calculate)
             return self.async_create_entry(
-                title="", data={CONF_COST_MODE: COST_MODE_NONE}
+                title="", data={CONF_COST_MODE: COST_MODE_NONE, **self._new_options}
             )
 
         current_options = self._config_entry.options
-
         mode_choices = build_cost_mode_choices()
+
+        schema_dict = {
+            vol.Required(
+                CONF_COST_MODE,
+                default=current_options.get(CONF_COST_MODE, COST_MODE_RATE_8),
+            ): vol.In(mode_choices),
+        }
+        if has_gas:
+            gas_choices = build_gas_cost_mode_choices()
+            schema_dict[
+                vol.Required(
+                    CONF_GAS_COST_MODE,
+                    default=current_options.get(CONF_GAS_COST_MODE, COST_MODE_NONE),
+                )
+            ] = vol.In(gas_choices)
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_COST_MODE,
-                        default=current_options.get(CONF_COST_MODE, COST_MODE_RATE_8),
-                    ): vol.In(mode_choices),
-                }
-            ),
+            data_schema=vol.Schema(schema_dict),
         )
 
     async def async_step_fixed_rate(

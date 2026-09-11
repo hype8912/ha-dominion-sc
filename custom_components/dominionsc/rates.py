@@ -126,18 +126,21 @@ def build_cost_mode_choices() -> dict[str, str]:
     Build the ordered cost-mode selector dict used by ConfigFlow and OptionsFlow.
 
     Returns a mapping of ``{cost_mode_key: display_label}`` in the order they
-    should appear in the UI selector: None first, then all rate plans (in
-    registry order), then Fixed Rate last.
+    should appear in the UI selector: None first, then rate plans in logical
+    order, then Fixed Rate last.
 
     Returns:
         Ordered dict suitable for passing to a HA ``SelectSelector``.
 
     """
-    plan_choices = {mode: plan.name for mode, plan in RATE_PLAN_REGISTRY.items()}
     return {
         COST_MODE_NONE: "None (no cost calculation)",
-        **plan_choices,
-        COST_MODE_FIXED: "Fixed Rate (custom)",
+        COST_MODE_RATE_8: "Rate 8 - Residential Service",
+        COST_MODE_RATE_6: "Rate 6 - Energy Saver / Conservation Rate",
+        COST_MODE_RATE_5: "Rate 5 - Time of Use",
+        COST_MODE_RATE_7: "Rate 7 - Time-of-Use Demand (energy cost only)",
+        COST_MODE_RATE_2: "Rate 2 - Low Use Residential Service",
+        COST_MODE_FIXED: "Fixed Rate (custom $/kWh)",
     }
 
 
@@ -152,8 +155,8 @@ def build_gas_cost_mode_choices() -> dict[str, str]:
         Ordered dict suitable for passing to a HA ``SelectSelector``.
 
     """
-    gas_choices = {mode: plan.name for mode, plan in GAS_RATE_PLAN_REGISTRY.items()}
     return {
         COST_MODE_NONE: "None (no cost calculation)",
-        **gas_choices,
+        COST_MODE_RATE_32S: "Rate 32S - Gas Standard Service",
+        COST_MODE_RATE_32V: "Rate 32V - Gas Value Service",
     }

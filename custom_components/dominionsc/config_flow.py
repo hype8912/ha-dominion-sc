@@ -15,8 +15,10 @@ Initial setup flow (step IDs)
                                                                         |
     backfill_options -----------------------------------------------> cost_mode
                                                                         |
-    cost_mode --> "rate_8" / "rate_6" / "none" ------------------> CREATE ENTRY
-              +-- "fixed" --------> cost_mode_fixed_rate ---------> CREATE ENTRY
+    cost_mode --> "rate_8" / "rate_5" / etc. / "none" --------> gas_cost_mode (if GAS) --> CREATE ENTRY
+              |                                               +-> CREATE ENTRY (no GAS)
+              +-- "fixed" --> cost_mode_fixed_rate -----------> gas_cost_mode (if GAS) --> CREATE ENTRY
+                                                            +-> CREATE ENTRY (no GAS)
 
 Re-authentication flow
 -----------------------
@@ -71,14 +73,16 @@ from .const import (
     CONF_EXTENDED_BACKFILL,
     CONF_EXTENDED_COST_BACKFILL,
     CONF_FIXED_RATE,
+    CONF_GAS_COST_MODE,
     CONF_LOGIN_DATA,
     COST_MODE_FIXED,
+    COST_MODE_NONE,
     COST_MODE_RATE_8,
     DEFAULT_FIXED_RATE,
     DOMAIN,
 )
 from .options_flow import DominionSCOptionsFlow
-from .rates import build_cost_mode_choices
+from .rates import build_cost_mode_choices, build_gas_cost_mode_choices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,6 +130,41 @@ async def _validate_login(
     await api.async_login()
 
 
+async def _fetch_accounts(
+    hass: HomeAssistant,
+    data: Mapping[str, Any],
+) -> list[str]:
+    """
+    Fetch the list of account type strings after a successful login.
+
+    Creates a fresh API client using the stored credentials and calls
+    ``async_get_accounts()``. Returns the raw account list (e.g.
+    ``["ELECTRIC", "GAS"]``). Returns an empty list if any network or API
+    error occurs so that callers can treat accounts as unknown and skip
+    account-specific flow steps.
+
+    Args:
+        hass: The Home Assistant instance.
+        data: Dict containing ``CONF_USERNAME``, ``CONF_PASSWORD``, and
+              optionally ``CONF_LOGIN_DATA``.
+
+    Returns:
+        List of account type strings, or ``[]`` on error.
+    """
+    try:
+        api = DominionSC(
+            async_create_clientsession(hass, cookie_jar=create_cookie_jar()),
+            data[CONF_USERNAME],
+            data[CONF_PASSWORD],
+            data.get(CONF_LOGIN_DATA),
+        )
+        await api.async_login()
+        accounts, _ = await api.async_get_accounts()
+        return list(accounts)
+    except (CannotConnect, ApiException, InvalidAuth):
+        return []
+
+
 class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     """
     Handle the initial config flow for dominionsc.
@@ -157,6 +196,9 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         # Holds the TFA handler returned by MfaChallenge so tfa_options and
         # tfa_code steps can use it. None when TFA is not required.
         self.tfa_handler: DominionSCTFAHandler | None = None
+        # Holds the list of account type strings fetched after a successful login.
+        # Used to determine whether to show the gas cost mode step.
+        self._accounts: list[str] = []
 
     @staticmethod
     @callback
@@ -212,6 +254,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("API structure error during login: %s", err)
                 errors["base"] = "unknown"
             else:
+                self._accounts = await _fetch_accounts(self.hass, self._data)
                 return await self.async_step_backfill_options()
 
         schema_dict: VolDictType = {
@@ -317,6 +360,8 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                 # login_data is a session/cookie token, not a password. Storing it
                 # in CONF_LOGIN_DATA allows future logins to bypass TFA entirely.
                 self._data[CONF_LOGIN_DATA] = login_data
+                if self.source != SOURCE_REAUTH:
+                    self._accounts = await _fetch_accounts(self.hass, self._data)
                 if self.source == SOURCE_REAUTH:
                     # Reauth only refreshes credentials — skip backfill/cost-mode.
                     return self.async_update_reload_and_abort(
@@ -397,6 +442,8 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             if mode == COST_MODE_FIXED:
                 return await self.async_step_cost_mode_fixed_rate()
             self._options[CONF_COST_MODE] = mode
+            if "GAS" in self._accounts:
+                return await self.async_step_gas_cost_mode()
             return self._async_create_dominionsc_entry(self._data)
 
         mode_choices = build_cost_mode_choices()
@@ -425,6 +472,8 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._options[CONF_COST_MODE] = COST_MODE_FIXED
             self._options[CONF_FIXED_RATE] = user_input[CONF_FIXED_RATE]
+            if "GAS" in self._accounts:
+                return await self.async_step_gas_cost_mode()
             return self._async_create_dominionsc_entry(self._data)
 
         return self.async_show_form(
@@ -434,6 +483,36 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_FIXED_RATE, default=DEFAULT_FIXED_RATE
                     ): vol.Coerce(float),
+                }
+            ),
+        )
+
+    async def async_step_gas_cost_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """
+        Step 4b: Select gas cost calculation rate (shown only if GAS account detected).
+
+        Only reached when ``"GAS"`` was found in the account list after login.
+        Presents a dropdown with available gas rate plans (Rate 32S, Rate 32V, or None).
+        The default is ``COST_MODE_NONE`` (no gas cost calculation).
+
+        On submission, stores ``CONF_GAS_COST_MODE`` in ``_options`` and creates
+        the config entry.
+        """
+        if user_input is not None:
+            self._options[CONF_GAS_COST_MODE] = user_input[CONF_GAS_COST_MODE]
+            return self._async_create_dominionsc_entry(self._data)
+
+        gas_choices = build_gas_cost_mode_choices()
+
+        return self.async_show_form(
+            step_id="gas_cost_mode",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_GAS_COST_MODE, default=COST_MODE_NONE
+                    ): vol.In(gas_choices),
                 }
             ),
         )

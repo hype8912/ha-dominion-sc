@@ -79,6 +79,9 @@ def mock_dominionsc_api() -> MagicMock:
     with patch("custom_components.dominionsc.config_flow.DominionSC") as mock_api:
         api_instance = MagicMock()
         api_instance.async_login = AsyncMock()
+        api_instance.async_get_accounts = AsyncMock(
+            return_value=(["ELECTRIC"], "addr_123")
+        )
         mock_api.return_value = api_instance
         yield api_instance
 

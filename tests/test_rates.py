@@ -68,8 +68,8 @@ def test_build_cost_mode_choices_ordering() -> None:
 
 def test_build_cost_mode_choices_uses_library_plan_name() -> None:
     choices = build_cost_mode_choices()
-    assert choices[COST_MODE_RATE_8] == RATE_8.name
-    assert choices[COST_MODE_RATE_6] == RATE_6.name
+    assert "Rate 8" in choices[COST_MODE_RATE_8]
+    assert "Rate 6" in choices[COST_MODE_RATE_6]
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +175,9 @@ def test_build_cost_mode_choices_contains_new_rate_plans() -> None:
 
 def test_build_cost_mode_choices_uses_library_name_for_new_plans() -> None:
     choices = build_cost_mode_choices()
-    assert choices[COST_MODE_RATE_5] == RATE_5.name
-    assert choices[COST_MODE_RATE_7] == RATE_7.name
-    assert choices[COST_MODE_RATE_2] == RATE_2.name
+    assert "Rate 5" in choices[COST_MODE_RATE_5]
+    assert "Rate 7" in choices[COST_MODE_RATE_7]
+    assert "Rate 2" in choices[COST_MODE_RATE_2]
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +217,8 @@ def test_build_gas_cost_mode_choices_none_is_first() -> None:
 
 def test_build_gas_cost_mode_choices_uses_library_plan_names() -> None:
     choices = build_gas_cost_mode_choices()
-    assert choices[COST_MODE_RATE_32S] == RATE_32S.name
-    assert choices[COST_MODE_RATE_32V] == RATE_32V.name
+    assert "Rate 32S" in choices[COST_MODE_RATE_32S]
+    assert "Rate 32V" in choices[COST_MODE_RATE_32V]
 
 
 def test_build_gas_cost_mode_choices_excludes_electric_modes() -> None:
@@ -226,3 +226,28 @@ def test_build_gas_cost_mode_choices_excludes_electric_modes() -> None:
     assert COST_MODE_RATE_8 not in choices
     assert COST_MODE_RATE_5 not in choices
     assert COST_MODE_FIXED not in choices
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: build_cost_mode_choices explicit labels
+# ---------------------------------------------------------------------------
+
+
+def test_build_cost_mode_choices_has_seven_options() -> None:
+    choices = build_cost_mode_choices()
+    assert len(choices) == 7
+
+
+def test_build_cost_mode_choices_rate7_has_energy_cost_only_note() -> None:
+    choices = build_cost_mode_choices()
+    assert "energy cost only" in choices[COST_MODE_RATE_7]
+
+
+def test_build_cost_mode_choices_fixed_rate_label() -> None:
+    choices = build_cost_mode_choices()
+    assert "Fixed Rate" in choices[COST_MODE_FIXED]
+
+
+def test_build_gas_cost_mode_choices_has_three_options() -> None:
+    choices = build_gas_cost_mode_choices()
+    assert len(choices) == 3

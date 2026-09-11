@@ -164,10 +164,24 @@ If you receive authentication errors:
 
 - **Data Delay**: Energy usage data is reported by Dominion Energy SC with a 24-48 hour delay. Real-time monitoring is not available. The API is polled every 12 hours for new energy data
 - **Single Service Address**: Currently supports only one service address per Dominion Energy SC account. Support for multiple service addresses may be included in a future release
-- **No Time-of-Use Data**: Time-of-use pricing breakdowns or any other rate not discussed above are not available
 - **No Solar/Grid Export**: Energy provided back to the grid from sources like solar panels is not yet supported
 - **Cost Estimates**: Calculations are estimates based on selected rate schedule; actual bills may vary (in particular, optional historic cost calculation will likely be less accurate due to need of estimating prior billing cycles)
+- **Fixed Charges Not Included**: Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics. Only energy usage charges are calculated
+- **Rate 7 Demand Charge**: For Rate 7 (Time-of-Use Demand), only the time-of-use energy portion is tracked. The monthly demand charge cannot be determined from interval data
 - **TFA Required**: The account must have TFA activated; flows are not supported for accounts without TFA
+
+### Supported Rate Schedules
+
+| Rate | Description | Type |
+|------|-------------|------|
+| Rate 2 | Limited Energy Service | Tiered |
+| Rate 5 | Time of Use | Time-of-Use |
+| Rate 6 | Energy Saver/Conservation | Tiered |
+| Rate 7 | Time-of-Use Demand | Time-of-Use (energy portion only; demand charge not tracked) |
+| Rate 8 | General Residential Service | Tiered |
+| Rate 32S | Gas Standard | Gas flat rate |
+| Rate 32V | Gas Value | Gas flat rate |
+| Fixed Rate | Custom $/kWh | Flat |
 
 ## Support
 

@@ -172,6 +172,20 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
 )
 
 
+# Gas cost sensor — registered only when gas cost statistics are being written.
+GAS_COST_SENSOR = DominionSCEntityDescription(
+    key="gas_cost_to_date",
+    translation_key="gas_cost_to_date",
+    device_class=SensorDeviceClass.MONETARY,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    native_unit_of_measurement="USD",
+    state_class=SensorStateClass.TOTAL,
+    suggested_display_precision=2,
+    # Reads the running sum from the gas cost statistic.
+    value_fn=lambda data: data.gas_cost_to_date,
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: DominionSCConfigEntry,
@@ -239,6 +253,18 @@ async def async_setup_entry(
                 device_id,
             )
             for sensor in BILLING_SENSORS
+        )
+
+    # Register gas cost sensor only when gas cost statistics are present.
+    if dominionsc_data.gas_cost_to_date is not None:
+        entities.append(
+            DominionSCSensor(
+                coordinator,
+                GAS_COST_SENSOR,
+                "billing",
+                device,
+                device_id,
+            )
         )
 
     async_add_entities(entities)

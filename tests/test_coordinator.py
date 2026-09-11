@@ -2147,3 +2147,117 @@ async def test_public_recalculation_lock(coordinator: DominionSCCoordinator) -> 
             {CONF_COST_MODE: COST_MODE_NONE},
         )
     locked.assert_awaited_once()
+
+
+async def test_async_update_data_gas_cost_populated(
+    hass: HomeAssistant,
+) -> None:
+    """gas_cost_to_date is populated from statistics when GAS has a cost mode."""
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user", CONF_PASSWORD: "password"},
+        options={CONF_COST_MODE: COST_MODE_RATE_8, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+    entry.add_to_hass(hass)
+    coord = DominionSCCoordinator(hass, entry)
+    coord.api = MagicMock()
+    coord.api.async_login = AsyncMock()
+    coord.api.async_get_accounts = AsyncMock(return_value=(["ELECTRIC", "GAS"], "addr"))
+    coord.api.async_get_forecast = AsyncMock(return_value=None)
+
+    gas_cost_stat_id = "dominionsc:addr_gas_energy_cost"
+    mock_gas_stat = {gas_cost_stat_id: [{"sum": 45.67}]}
+
+    def fake_get_last_statistics(hass_inner, n, stat_id, convert, fields):
+        if stat_id == gas_cost_stat_id:
+            return mock_gas_stat
+        return {}
+
+    with (
+        patch.object(
+            coord,
+            "_insert_statistics",
+            new=AsyncMock(return_value={"ELECTRIC": datetime(2025, 7, 1), "GAS": datetime(2025, 7, 1)}),
+        ),
+        patch(
+            "custom_components.dominionsc.coordinator.get_instance"
+        ) as mock_get_instance,
+    ):
+        mock_get_instance.return_value.async_add_executor_job = AsyncMock(
+            side_effect=lambda fn, *args: fn(*args)
+        )
+        with patch(
+            "custom_components.dominionsc.coordinator.get_last_statistics",
+            side_effect=fake_get_last_statistics,
+        ):
+            result = await coord._async_update_data()
+
+    assert result.gas_cost_to_date == 45.67
+
+
+async def test_async_update_data_gas_cost_empty_stats(
+    hass: HomeAssistant,
+) -> None:
+    """gas_cost_to_date is None when get_last_statistics returns empty."""
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user", CONF_PASSWORD: "password"},
+        options={CONF_COST_MODE: COST_MODE_RATE_8, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+    entry.add_to_hass(hass)
+    coord = DominionSCCoordinator(hass, entry)
+    coord.api = MagicMock()
+    coord.api.async_login = AsyncMock()
+    coord.api.async_get_accounts = AsyncMock(return_value=(["ELECTRIC", "GAS"], "addr"))
+    coord.api.async_get_forecast = AsyncMock(return_value=None)
+
+    with (
+        patch.object(
+            coord,
+            "_insert_statistics",
+            new=AsyncMock(return_value={"ELECTRIC": datetime(2025, 7, 1)}),
+        ),
+        patch(
+            "custom_components.dominionsc.coordinator.get_instance"
+        ) as mock_get_instance,
+    ):
+        mock_get_instance.return_value.async_add_executor_job = AsyncMock(
+            side_effect=lambda fn, *args: fn(*args)
+        )
+        with patch(
+            "custom_components.dominionsc.coordinator.get_last_statistics",
+            return_value={},
+        ):
+            result = await coord._async_update_data()
+
+    assert result.gas_cost_to_date is None
+
+
+async def test_async_update_data_gas_cost_mode_none(
+    hass: HomeAssistant,
+) -> None:
+    """gas_cost_to_date is None when gas cost mode is COST_MODE_NONE."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user", CONF_PASSWORD: "password"},
+        options={CONF_COST_MODE: COST_MODE_RATE_8},
+    )
+    entry.add_to_hass(hass)
+    coord = DominionSCCoordinator(hass, entry)
+    coord.api = MagicMock()
+    coord.api.async_login = AsyncMock()
+    coord.api.async_get_accounts = AsyncMock(return_value=(["ELECTRIC", "GAS"], "addr"))
+    coord.api.async_get_forecast = AsyncMock(return_value=None)
+
+    with patch.object(
+        coord,
+        "_insert_statistics",
+        new=AsyncMock(return_value={"ELECTRIC": datetime(2025, 7, 1)}),
+    ):
+        result = await coord._async_update_data()
+
+    assert result.gas_cost_to_date is None

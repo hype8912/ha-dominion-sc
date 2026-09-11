@@ -292,12 +292,25 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             for account in accounts
         }
 
+        # Fetch accumulated gas cost from statistics when a gas rate is configured.
+        gas_cost_to_date: float | None = None
+        if "GAS" in accounts:
+            gas_cost_mode, _ = _resolve_gas_cost_config(self.config_entry.options)
+            if gas_cost_mode != COST_MODE_NONE:
+                _, gas_cost_id, _ = _build_statistic_ids(service_addr_account_no, "GAS")
+                last_gas_cost = await get_instance(self.hass).async_add_executor_job(
+                    get_last_statistics, self.hass, 1, gas_cost_id, True, {"sum"}
+                )
+                if last_gas_cost.get(gas_cost_id):
+                    gas_cost_to_date = last_gas_cost[gas_cost_id][0].get("sum")
+
         # Return combined struct with accounts and shared data
         return DominionSCData(
             accounts=account_data,
             forecast=forecast,
             service_addr_account_no=service_addr_account_no,
             last_updated=dt_util.utcnow(),
+            gas_cost_to_date=gas_cost_to_date,
         )
 
     def _push_cost_statistics(

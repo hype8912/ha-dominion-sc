@@ -128,3 +128,4 @@ class DominionSCData:
     forecast: Forecast | None
     service_addr_account_no: str
     last_updated: datetime
+    gas_cost_to_date: float | None = None

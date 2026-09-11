@@ -108,7 +108,7 @@
     "step": {
       "init": {
         "title": "Cost Calculation Settings",
-        "description": "Select how energy costs are calculated.",
+        "description": "Select how energy costs are calculated.\n\n**Note:** Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics.",
         "data": {
           "cost_mode": "Cost calculation method"
         },
@@ -172,6 +172,9 @@
       },
       "last_updated": {
         "name": "Last Polling"
+      },
+      "gas_cost_to_date": {
+        "name": "Gas accumulated cost"
       }
     }
   }

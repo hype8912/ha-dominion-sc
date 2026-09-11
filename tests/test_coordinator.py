@@ -41,6 +41,9 @@ from custom_components.dominionsc.const import (
     CONF_FIXED_RATE,
     COST_MODE_FIXED,
     COST_MODE_NONE,
+    COST_MODE_RATE_5,
+    COST_MODE_RATE_6,
+    COST_MODE_RATE_7,
     COST_MODE_RATE_8,
     DOMAIN,
 )
@@ -55,7 +58,7 @@ from custom_components.dominionsc.coordinator import (
     _find_billing_cycle_for_date,
     _resolve_cost_config,
 )
-from dominionsc import RATE_8
+from dominionsc import RATE_2, RATE_5, RATE_7, RATE_8
 
 
 # ---------------------------------------------------------------------------
@@ -155,10 +158,10 @@ def test_cost_fixed() -> None:
     )
 
 
-def test_cost_tiered_before_effective() -> None:
-    # RATE_8.effective_from is 2026-07-01; intervals before that return $0
+def test_cost_tiered_before_all_known_rates() -> None:
+    # Date before 2025-07-23 (the start of the earliest historical rate) → $0
     assert (
-        _calculate_cost_for_wh(100, datetime(2026, 6, 30), 0, COST_MODE_RATE_8, 0, RATE_8)
+        _calculate_cost_for_wh(100, datetime(2025, 7, 1), 0, COST_MODE_RATE_8, 0, RATE_8)
         == 0.0
     )
 
@@ -208,6 +211,317 @@ def test_cost_rate8_with_no_schedule_returns_zero() -> None:
         _calculate_cost_for_wh(10, datetime(2025, 1, 1), 0, COST_MODE_RATE_8, 0, None)
         == 0
     )
+
+
+# Phase 2: versioned rate dispatch
+
+
+def test_cost_historical_rate8_summer_under_boundary() -> None:
+    # 2025-10-01 falls in the historical Rate 8 period (2025-07-23 to 2026-06-30).
+    # October is winter (month 10). 100 Wh, cumulative 0 → under boundary.
+    # Expected: 100 × 0.14599/1000
+    result = _calculate_cost_for_wh(
+        100, datetime(2025, 10, 1), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert abs(result - 100 * 0.14599 / 1000) < 1e-12
+
+
+def test_cost_historical_rate8_summer_month() -> None:
+    # August 2025 is summer in the historical period.
+    # 100 Wh under boundary → summer_under rate.
+    result = _calculate_cost_for_wh(
+        100, datetime(2025, 8, 15), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert abs(result - 100 * 0.14599 / 1000) < 1e-12
+
+
+def test_cost_historical_rate8_over_boundary() -> None:
+    # cumulative_before already above 800 kWh → upper tier of historical Rate 8.
+    # Winter upper: $0.14045/kWh
+    result = _calculate_cost_for_wh(
+        1000, datetime(2025, 10, 1), 900_000, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert abs(result - 1000 * 0.14045 / 1000) < 1e-12
+
+
+def test_cost_historical_rate8_straddles_boundary() -> None:
+    # cumulative_before=799_000 Wh, interval=2000 Wh → crosses 800_000 boundary.
+    # Winter: 1000 Wh at $0.14599/kWh + 1000 Wh at $0.14045/kWh
+    result = _calculate_cost_for_wh(
+        2000, datetime(2025, 10, 1), 799_000, COST_MODE_RATE_8, 0, RATE_8
+    )
+    expected = 1000 * 0.14599 / 1000 + 1000 * 0.14045 / 1000
+    assert abs(result - expected) < 1e-12
+
+
+def test_cost_current_rate8_after_effective() -> None:
+    # 2026-07-15 is on/after 2026-07-01 → uses new library RATE_8 values.
+    # Summer under boundary: $0.15878/kWh
+    result = _calculate_cost_for_wh(
+        100, datetime(2026, 7, 15), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert abs(result - 100 * 0.15878 / 1000) < 1e-9
+
+
+def test_cost_historical_rate6_winter_under() -> None:
+    # Historical Rate 6 winter under-boundary: $0.14164/kWh
+    from dominionsc import RATE_6
+
+    result = _calculate_cost_for_wh(
+        100, datetime(2025, 11, 1), 0, COST_MODE_RATE_6, 0, RATE_6
+    )
+    assert abs(result - 100 * 0.14164 / 1000) < 1e-12
+
+
+def test_cost_historical_rate8_exactly_on_effective_to() -> None:
+    # 2026-06-30 is the last day of the historical period — should use historical rates.
+    result = _calculate_cost_for_wh(
+        100, datetime(2026, 6, 30), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    # June is summer (month 6); summer_under rate
+    assert abs(result - 100 * 0.14599 / 1000) < 1e-12
+
+
+# Phase 3: TOU predicates and TOU cost calculation
+
+
+def test_rate_plan_is_tiered_true_for_rate8() -> None:
+    from custom_components.dominionsc.cost import _rate_plan_is_tiered
+
+    assert _rate_plan_is_tiered(RATE_8) is True
+
+
+def test_rate_plan_is_tiered_false_for_rate5() -> None:
+    from custom_components.dominionsc.cost import _rate_plan_is_tiered
+
+    assert _rate_plan_is_tiered(RATE_5) is False
+
+
+def test_rate_plan_is_tou_true_for_rate5() -> None:
+    from custom_components.dominionsc.cost import _rate_plan_is_tou
+
+    assert _rate_plan_is_tou(RATE_5) is True
+
+
+def test_rate_plan_is_tou_false_for_rate8() -> None:
+    from custom_components.dominionsc.cost import _rate_plan_is_tou
+
+    assert _rate_plan_is_tou(RATE_8) is False
+
+
+def test_rate_plan_has_demand_true_for_rate7() -> None:
+    from custom_components.dominionsc.cost import _rate_plan_has_demand
+
+    assert _rate_plan_has_demand(RATE_7) is True
+
+
+def test_rate_plan_has_demand_false_for_rate5() -> None:
+    from custom_components.dominionsc.cost import _rate_plan_has_demand
+
+    assert _rate_plan_has_demand(RATE_5) is False
+
+
+def test_tou_cost_summer_on_peak() -> None:
+    """Summer on-peak window (16:00–20:00 ET): $0.29907/kWh."""
+    from zoneinfo import ZoneInfo
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    # 2026-07-15 17:00 ET — summer, inside on-peak window (16:00–20:00)
+    dt = datetime(2026, 7, 15, 17, 0, 0, tzinfo=ET)
+    result = _calculate_tou_cost(1000, dt, RATE_5)
+    assert abs(result - 1000 * 0.29907 / 1000) < 1e-9
+
+
+def test_tou_cost_summer_super_off_peak() -> None:
+    """Summer super-off-peak window (01:00–05:00 ET): $0.09623/kWh."""
+    from zoneinfo import ZoneInfo
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 7, 15, 2, 0, 0, tzinfo=ET)
+    result = _calculate_tou_cost(1000, dt, RATE_5)
+    assert abs(result - 1000 * 0.09623 / 1000) < 1e-9
+
+
+def test_tou_cost_summer_off_peak_fallback() -> None:
+    """Summer noon (no non-fallback window) → fallback off-peak $0.15074/kWh."""
+    from zoneinfo import ZoneInfo
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 7, 15, 12, 0, 0, tzinfo=ET)
+    result = _calculate_tou_cost(1000, dt, RATE_5)
+    assert abs(result - 1000 * 0.15074 / 1000) < 1e-9
+
+
+def test_tou_cost_winter_on_peak() -> None:
+    """Winter on-peak window (06:00–09:00 ET): $0.29907/kWh."""
+    from zoneinfo import ZoneInfo
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 12, 15, 7, 0, 0, tzinfo=ET)
+    result = _calculate_tou_cost(1000, dt, RATE_5)
+    assert abs(result - 1000 * 0.29907 / 1000) < 1e-9
+
+
+def test_tou_cost_winter_super_off_peak_second_window() -> None:
+    """Winter 13:00 ET hits the second super-off-peak window (12:00–15:00 ET)."""
+    from zoneinfo import ZoneInfo
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 12, 15, 13, 0, 0, tzinfo=ET)
+    result = _calculate_tou_cost(1000, dt, RATE_5)
+    assert abs(result - 1000 * 0.09623 / 1000) < 1e-9
+
+
+def test_tou_cost_no_tou_charge_returns_zero() -> None:
+    """A plan with no TimeOfUseCharge (e.g. RATE_8) returns 0.0."""
+    from zoneinfo import ZoneInfo
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 7, 15, 17, 0, 0, tzinfo=ET)
+    assert _calculate_tou_cost(1000, dt, RATE_8) == 0.0
+
+
+def test_tou_cost_midnight_crossing_window() -> None:
+    """Interval in a midnight-crossing window [22:00, 06:00) is correctly matched."""
+    from datetime import time
+    from decimal import Decimal
+    from zoneinfo import ZoneInfo
+
+    from dominionsc import Commodity, Season, TimeOfUsePeriod, TimeWindow
+    from dominionsc import TimeOfUseCharge as TouCharge
+    from dominionsc.models import RatePlan as LibRatePlan
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    crossing_plan = LibRatePlan(
+        code="test_cross",
+        name="Test Crossing",
+        commodity=Commodity.ELECTRICITY,
+        effective_from=date(2026, 7, 1),
+        effective_to=None,
+        charges=(
+            TouCharge(
+                name="Test TOU",
+                periods_by_season={
+                    Season.SUMMER: (
+                        TimeOfUsePeriod(
+                            name="late_night",
+                            price_per_unit=Decimal("0.10"),
+                            windows=(TimeWindow(time(22, 0), time(6, 0)),),
+                        ),
+                        TimeOfUsePeriod(
+                            name="day",
+                            price_per_unit=Decimal("0.20"),
+                            fallback=True,
+                        ),
+                    ),
+                    Season.WINTER: (
+                        TimeOfUsePeriod(
+                            name="day",
+                            price_per_unit=Decimal("0.20"),
+                            fallback=True,
+                        ),
+                    ),
+                },
+            ),
+        ),
+    )
+    # 23:00 ET is inside the crossing window [22:00, 06:00) → late_night rate
+    dt = datetime(2026, 7, 15, 23, 0, 0, tzinfo=ET)
+    result = _calculate_tou_cost(1000, dt, crossing_plan)
+    assert abs(result - 1000 * 0.10 / 1000) < 1e-9
+
+
+def test_cost_tou_rate5_dispatch() -> None:
+    """_calculate_cost_for_wh dispatches Rate 5 on-peak to TOU calculation."""
+    from zoneinfo import ZoneInfo
+
+    ET = ZoneInfo("America/New_York")
+    # 2026-07-15 17:00 ET — summer on-peak
+    dt = datetime(2026, 7, 15, 17, 0, 0, tzinfo=ET)
+    result = _calculate_cost_for_wh(1000, dt, 0, COST_MODE_RATE_5, 0, RATE_5)
+    assert abs(result - 1000 * 0.29907 / 1000) < 1e-9
+
+
+def test_tou_cost_no_fallback_returns_zero() -> None:
+    """A TOU charge with no fallback period and no window match returns 0.0."""
+    from datetime import time
+    from decimal import Decimal
+    from zoneinfo import ZoneInfo
+
+    from dominionsc import Commodity, Season, TimeOfUsePeriod, TimeWindow
+    from dominionsc import TimeOfUseCharge as TouCharge
+    from dominionsc.models import RatePlan as LibRatePlan
+
+    from custom_components.dominionsc.cost import _calculate_tou_cost
+
+    ET = ZoneInfo("America/New_York")
+    # Plan with one non-fallback period (midnight window) and NO fallback period.
+    no_fallback_plan = LibRatePlan(
+        code="test_no_fallback",
+        name="No Fallback",
+        commodity=Commodity.ELECTRICITY,
+        effective_from=date(2026, 7, 1),
+        effective_to=None,
+        charges=(
+            TouCharge(
+                name="Test TOU no fallback",
+                periods_by_season={
+                    Season.SUMMER: (
+                        TimeOfUsePeriod(
+                            name="late_night",
+                            price_per_unit=Decimal("0.10"),
+                            windows=(TimeWindow(time(22, 0), time(23, 0)),),
+                        ),
+                    ),
+                    Season.WINTER: (),
+                },
+            ),
+        ),
+    )
+    # Noon — outside the only window and no fallback
+    dt = datetime(2026, 7, 15, 12, 0, 0, tzinfo=ET)
+    assert _calculate_tou_cost(1000, dt, no_fallback_plan) == 0.0
+
+
+def test_cost_flat_rate_plan_returns_zero_for_wh() -> None:
+    """A plan with neither TieredUsageCharge nor TimeOfUseCharge (Rate 2 flat) returns 0.0."""
+    from custom_components.dominionsc.const import COST_MODE_RATE_2
+
+    # Rate 2 effective from 2026-07-01; interval is after that date.
+    # It has only FlatUsageCharge — not tiered and not TOU → 0.0.
+    result = _calculate_cost_for_wh(
+        1000, datetime(2026, 8, 1), 0, COST_MODE_RATE_2, 0, RATE_2
+    )
+    assert result == 0.0
+
+
+def test_cost_tou_rate7_skips_demand_logs_debug(caplog: pytest.LogCaptureFixture) -> None:
+    """Rate 7 TOU cost is calculated; demand charge is skipped with a debug log."""
+    import logging
+
+    from zoneinfo import ZoneInfo
+
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 7, 15, 17, 0, 0, tzinfo=ET)
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dominionsc.cost"):
+        result = _calculate_cost_for_wh(1000, dt, 0, COST_MODE_RATE_7, 0, RATE_7)
+    # Rate 7 summer on-peak: same TOU prices as Rate 5 on-peak ($0.17441/kWh)
+    assert result > 0
+    assert "demand charge" in caplog.text.lower()
 
 
 def test_billing_gap_january() -> None:

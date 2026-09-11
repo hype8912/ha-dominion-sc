@@ -16,7 +16,9 @@ truth and to avoid circular imports. Groupings:
 
 **Cost mode identifiers** (values for ``CONF_COST_MODE``)
     :data:`COST_MODE_NONE`, :data:`COST_MODE_FIXED`,
-    :data:`COST_MODE_RATE_8`, :data:`COST_MODE_RATE_6`
+    :data:`COST_MODE_RATE_2`, :data:`COST_MODE_RATE_5`,
+    :data:`COST_MODE_RATE_6`, :data:`COST_MODE_RATE_7`,
+    :data:`COST_MODE_RATE_8`
 
 **Tuning parameters**
     :data:`DEFAULT_FIXED_RATE`, :data:`EXTENDED_BACKFILL_DAYS`,
@@ -95,6 +97,20 @@ COST_MODE_RATE_8: Final = "rate_8"
 # Tiered with seasonal summer/winter rates. See rates.SC_RATE_6 for details.
 COST_MODE_RATE_6: Final = "rate_6"
 
+# Dominion Energy SC Rate Schedule 2 — Low Use Residential Service.
+# Flat rate electric plan for customers with limited monthly usage.
+COST_MODE_RATE_2: Final = "rate_2"
+
+# Dominion Energy SC Rate Schedule 5 — Time of Use.
+# TOU pricing: on-peak, super-off-peak, and off-peak periods (no demand charge).
+COST_MODE_RATE_5: Final = "rate_5"
+
+# Dominion Energy SC Rate Schedule 7 — Time-of-Use Demand.
+# TOU pricing identical to Rate 5 plus an on-peak billing demand charge.
+# The demand charge is NOT tracked in long-term statistics (requires billing-
+# period maximum demand, not summable interval data).
+COST_MODE_RATE_7: Final = "rate_7"
+
 # ---------------------------------------------------------------------------
 # Default values
 # ---------------------------------------------------------------------------
@@ -118,6 +134,20 @@ EXTENDED_BACKFILL_DAYS: Final = 365
 # sometimes delivers an interval a day or two after the fact).
 LOOKBACK_DAYS: Final = 5
 
+
+# ---------------------------------------------------------------------------
+# Rate schema versioning
+# ---------------------------------------------------------------------------
+
+# Key stored in entry.data to track which rate-value schema the user's
+# statistics were last calculated against. Used to detect when tariff values
+# have changed and prompt the user to recalculate historical cost data.
+CONF_LAST_RATE_SCHEMA_VERSION: Final = "last_rate_schema_version"
+
+# Increment this whenever tariff rates are corrected (not just added).
+# Existing users whose stored version is lower will see a persistent
+# notification prompting them to recalculate historical cost statistics.
+CURRENT_RATE_SCHEMA_VERSION: Final = 2
 
 # ---------------------------------------------------------------------------
 # Helper functions

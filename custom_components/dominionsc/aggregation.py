@@ -195,6 +195,11 @@ def aggregate_hourly_data(
             if hour_start not in hourly_cost:
                 hourly_cost[hour_start] = 0.0
 
+            # cumulative_wh is passed for tiered-rate tier-boundary
+            # calculations. TOU plans (Rate 5, Rate 7) ignore this argument —
+            # TOU cost depends only on time-of-day and season, not cumulative
+            # usage. The value is always forwarded so the function signature
+            # stays uniform across all rate plan types.
             hourly_cost[hour_start] += _calculate_cost_for_wh(
                 usage_read.consumption,
                 usage_read.start_time,

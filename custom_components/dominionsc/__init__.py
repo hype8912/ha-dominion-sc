@@ -40,10 +40,15 @@ Related modules
 
 from __future__ import annotations
 
+from homeassistant.components import persistent_notification
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import (
+    CONF_LAST_RATE_SCHEMA_VERSION,
+    CURRENT_RATE_SCHEMA_VERSION,
+    DOMAIN,
+)
 from .coordinator import DominionSCConfigEntry, DominionSCCoordinator
 
 # The only platform this integration exposes is SENSOR.
@@ -87,6 +92,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: DominionSCConfigEntry) -
 
     # Register the update_listener and ensure it is cleaned up when the entry
     # is unloaded (``async_on_unload`` schedules the deregistration call).
+    # If the rate schema version stored in this entry is behind the current
+    # version, the user's historical cost statistics were calculated with old
+    # (now-superseded) tariff rates. Notify them to trigger a recalculation.
+    last_schema_version = entry.data.get(CONF_LAST_RATE_SCHEMA_VERSION, 0)
+    if last_schema_version < CURRENT_RATE_SCHEMA_VERSION:
+        persistent_notification.async_create(
+            hass,
+            (
+                "Dominion Energy SC rate values changed on 2026-07-01. "
+                "Cost statistics from 2025-07-23 to 2026-06-30 were calculated "
+                "at old tariff rates. "
+                "Go to **Settings → Devices & Services → Dominion Energy SC → Configure** "
+                "and select *Recalculate History* to update historical cost data."
+            ),
+            title="Dominion Energy SC: Rate Update",
+            notification_id="dominionsc_rate_schema_update",
+        )
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_LAST_RATE_SCHEMA_VERSION: CURRENT_RATE_SCHEMA_VERSION},
+        )
+
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     # Register sensor entities. This calls sensor.async_setup_entry().

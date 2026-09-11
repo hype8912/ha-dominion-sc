@@ -12,13 +12,15 @@ truth and to avoid circular imports. Groupings:
 
 **Config-entry options keys** (stored in ``entry.options``, user-changeable)
     :data:`CONF_COST_MODE`, :data:`CONF_FIXED_RATE`,
-    :data:`CONF_EXTENDED_BACKFILL`, :data:`CONF_EXTENDED_COST_BACKFILL`
+    :data:`CONF_EXTENDED_BACKFILL`, :data:`CONF_EXTENDED_COST_BACKFILL`,
+    :data:`CONF_GAS_COST_MODE`
 
-**Cost mode identifiers** (values for ``CONF_COST_MODE``)
+**Cost mode identifiers** (values for ``CONF_COST_MODE`` and ``CONF_GAS_COST_MODE``)
     :data:`COST_MODE_NONE`, :data:`COST_MODE_FIXED`,
     :data:`COST_MODE_RATE_2`, :data:`COST_MODE_RATE_5`,
     :data:`COST_MODE_RATE_6`, :data:`COST_MODE_RATE_7`,
-    :data:`COST_MODE_RATE_8`
+    :data:`COST_MODE_RATE_8`, :data:`COST_MODE_RATE_32S`,
+    :data:`COST_MODE_RATE_32V`
 
 **Tuning parameters**
     :data:`DEFAULT_FIXED_RATE`, :data:`EXTENDED_BACKFILL_DAYS`,
@@ -27,9 +29,10 @@ truth and to avoid circular imports. Groupings:
 Adding a new cost mode
 ----------------------
 1. Add a new ``COST_MODE_*`` constant here.
-2. Define a matching :class:`~.rates.RateSchedule` in :mod:`.rates`.
-3. Register it in :data:`~.rates.TIERED_RATE_REGISTRY` (or handle it as a
-   special case in :func:`~.cost._calculate_cost_for_wh`).
+2. Add it to :data:`~.rates.RATE_PLAN_REGISTRY` (electric) or
+   :data:`~.rates.GAS_RATE_PLAN_REGISTRY` (gas).
+3. Add an entry to :func:`~.rates.build_cost_mode_choices` or
+   :func:`~.rates.build_gas_cost_mode_choices`.
 No other files need to change.
 """
 
@@ -63,8 +66,13 @@ CONF_LOGIN_DATA = "login_data"
 # Config-entry OPTIONS keys  (entry.options — user-configurable via options flow)
 # ---------------------------------------------------------------------------
 
-# Which cost-calculation mode to use. One of the COST_MODE_* constants below.
+# Which cost-calculation mode to use for electric. One of the COST_MODE_* constants below.
 CONF_COST_MODE: Final = "cost_mode"
+
+# Which cost-calculation mode to use for gas. One of COST_MODE_NONE, COST_MODE_RATE_32S,
+# or COST_MODE_RATE_32V. Defaults to COST_MODE_NONE (no gas cost calculation).
+# Only relevant when the account has a GAS meter.
+CONF_GAS_COST_MODE: Final = "gas_cost_mode"
 
 # User-supplied flat rate in $/kWh. Only read when CONF_COST_MODE == COST_MODE_FIXED.
 CONF_FIXED_RATE: Final = "fixed_rate"
@@ -110,6 +118,14 @@ COST_MODE_RATE_5: Final = "rate_5"
 # The demand charge is NOT tracked in long-term statistics (requires billing-
 # period maximum demand, not summable interval data).
 COST_MODE_RATE_7: Final = "rate_7"
+
+# Dominion Energy SC Rate Schedule 32S — Gas Residential Standard Service.
+# Flat rate gas plan ($/therm). Usage is measured in ft³; conversion: 1 therm = 100 ft³.
+COST_MODE_RATE_32S: Final = "rate_32s"
+
+# Dominion Energy SC Rate Schedule 32V — Gas Residential Value Service.
+# Flat rate gas plan ($/therm). Requires average summer usage ≥ 10 therms/month.
+COST_MODE_RATE_32V: Final = "rate_32v"
 
 # ---------------------------------------------------------------------------
 # Default values

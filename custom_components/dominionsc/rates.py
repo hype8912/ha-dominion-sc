@@ -29,6 +29,8 @@ from .const import (
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_2,
+    COST_MODE_RATE_32S,
+    COST_MODE_RATE_32V,
     COST_MODE_RATE_5,
     COST_MODE_RATE_6,
     COST_MODE_RATE_7,
@@ -108,6 +110,17 @@ RATE_PLAN_REGISTRY: dict[str, RatePlan] = {
 }
 
 
+# Maps each supported gas cost-mode key to the corresponding library RatePlan.
+# Keyed by COST_MODE_RATE_32S / COST_MODE_RATE_32V. Only plans that are
+# currently available in the library are included (unknown codes are silently
+# omitted by the comprehension).
+GAS_RATE_PLAN_REGISTRY: dict[str, RatePlan] = {
+    mode: plan
+    for mode in (COST_MODE_RATE_32S, COST_MODE_RATE_32V)
+    if (plan := get_rate_plan(mode)) is not None
+}
+
+
 def build_cost_mode_choices() -> dict[str, str]:
     """
     Build the ordered cost-mode selector dict used by ConfigFlow and OptionsFlow.
@@ -125,4 +138,22 @@ def build_cost_mode_choices() -> dict[str, str]:
         COST_MODE_NONE: "None (no cost calculation)",
         **plan_choices,
         COST_MODE_FIXED: "Fixed Rate (custom)",
+    }
+
+
+def build_gas_cost_mode_choices() -> dict[str, str]:
+    """
+    Build the ordered gas cost-mode selector dict used by ConfigFlow and OptionsFlow.
+
+    Returns a mapping of ``{cost_mode_key: display_label}`` for gas rate plans,
+    with COST_MODE_NONE first. Only shown when the account has a GAS meter.
+
+    Returns:
+        Ordered dict suitable for passing to a HA ``SelectSelector``.
+
+    """
+    gas_choices = {mode: plan.name for mode, plan in GAS_RATE_PLAN_REGISTRY.items()}
+    return {
+        COST_MODE_NONE: "None (no cost calculation)",
+        **gas_choices,
     }

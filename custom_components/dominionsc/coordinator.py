@@ -109,7 +109,7 @@ from .const import (
     EXTENDED_BACKFILL_DAYS,
     LOOKBACK_DAYS,
 )
-from .cost import _calculate_cost_for_wh, _resolve_cost_config
+from .cost import _calculate_cost_for_wh, _resolve_cost_config, _resolve_gas_cost_config
 from .models import (
     DominionSCAccountData,
     DominionSCData,
@@ -140,6 +140,7 @@ __all__ = [
     "_estimate_billing_cycles",
     "_find_billing_cycle_for_date",
     "_resolve_cost_config",
+    "_resolve_gas_cost_config",
 ]
 
 
@@ -431,9 +432,16 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                                         start date and billing-cycle estimation).
 
         """
-        # Only track cost for electric accounts when a cost mode is active.
-        cost_mode, _, _ = _resolve_cost_config(self.config_entry.options)
-        if account != "ELECTRIC" or cost_mode == COST_MODE_NONE:
+        # Nullify cost_statistic_id for accounts where no cost mode is active.
+        if account == "ELECTRIC":
+            cost_mode, _, _ = _resolve_cost_config(self.config_entry.options)
+            if cost_mode == COST_MODE_NONE:
+                cost_statistic_id = None
+        elif account == "GAS":
+            gas_cost_mode, _ = _resolve_gas_cost_config(self.config_entry.options)
+            if gas_cost_mode == COST_MODE_NONE:
+                cost_statistic_id = None
+        else:
             cost_statistic_id = None
 
         _LOGGER.debug("Updating Statistics for %s", consumption_statistic_id)
@@ -972,10 +980,18 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             ``(hourly_consumption, hourly_cost)`` dicts keyed by hour start.
 
         """
-        cost_mode_here, fixed_rate_here, rate_plan_here = _resolve_cost_config(
-            self.config_entry.options
-        )
-        is_tiered_rate = cost_mode_here in RATE_PLAN_REGISTRY
+        if is_electric:
+            cost_mode_here, fixed_rate_here, rate_plan_here = _resolve_cost_config(
+                self.config_entry.options
+            )
+            is_tiered_rate = cost_mode_here in RATE_PLAN_REGISTRY
+        else:
+            # Gas accounts: resolve gas cost config; no fixed rate or tiered mode.
+            cost_mode_here, rate_plan_here = _resolve_gas_cost_config(
+                self.config_entry.options
+            )
+            fixed_rate_here = 0.0
+            is_tiered_rate = False
         return aggregate_hourly_data(
             usage_reads=usage_reads,
             metadata=metadata,
@@ -1213,8 +1229,9 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             self.hass, consumption_metadata, consumption_statistics
         )
 
-        # Add cost statistics for electric accounts
-        if is_electric and metadata.cost_id and cost_statistics:
+        # Add cost statistics for accounts with a cost mode configured
+        # (both electric and gas when a gas rate plan is selected).
+        if metadata.cost_id and cost_statistics:
             self._push_cost_statistics(
                 metadata.cost_id,
                 metadata.name_prefix.substitute(stat_type="cost"),

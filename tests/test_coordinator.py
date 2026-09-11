@@ -121,7 +121,8 @@ def test_build_statistic_ids_electric() -> None:
 def test_build_statistic_ids_gas() -> None:
     cid, cost_id, _prefix = _build_statistic_ids("456-789", "GAS")
     assert cid == f"{DOMAIN}:456_789_gas_energy_consumption"
-    assert cost_id is None
+    # Phase 4: gas accounts now have a cost_id (nullified by coordinator when no gas mode active)
+    assert cost_id == f"{DOMAIN}:456_789_gas_energy_cost"
 
 
 def test_resolve_cost_config_default() -> None:
@@ -497,16 +498,36 @@ def test_tou_cost_no_fallback_returns_zero() -> None:
     assert _calculate_tou_cost(1000, dt, no_fallback_plan) == 0.0
 
 
-def test_cost_flat_rate_plan_returns_zero_for_wh() -> None:
-    """A plan with neither TieredUsageCharge nor TimeOfUseCharge (Rate 2 flat) returns 0.0."""
+def test_cost_rate_plan_with_no_matching_charge_type_returns_zero() -> None:
+    """A rate plan after its effective date with no tiered/TOU/flat charge returns 0.0."""
+    from decimal import Decimal
+
+    from dominionsc import Commodity, DailyCharge
+    from dominionsc.models import RatePlan as LibRatePlan
+
+    # Synthetic plan with only a DailyCharge — not tiered, not TOU, not flat
+    plan = LibRatePlan(
+        code="test_no_usage_charge",
+        name="Test No Usage Charge",
+        commodity=Commodity.ELECTRICITY,
+        effective_from=date(2026, 7, 1),
+        effective_to=None,
+        charges=(DailyCharge(name="Facilities", amount=Decimal("0.36164")),),
+    )
+    result = _calculate_cost_for_wh(1000, datetime(2026, 8, 1), 0, "test_no_usage_charge", 0, plan)
+    assert result == 0.0
+
+
+def test_cost_flat_rate2_calculates_correctly() -> None:
+    """Rate 2 flat electric plan: 1000 Wh × $0.13111/kWh = $0.13111."""
     from custom_components.dominionsc.const import COST_MODE_RATE_2
 
     # Rate 2 effective from 2026-07-01; interval is after that date.
-    # It has only FlatUsageCharge — not tiered and not TOU → 0.0.
+    # FlatUsageCharge with $0.13111/kWh: cost = 1000 Wh / 1000 × $0.13111
     result = _calculate_cost_for_wh(
         1000, datetime(2026, 8, 1), 0, COST_MODE_RATE_2, 0, RATE_2
     )
-    assert result == 0.0
+    assert abs(result - 0.13111) < 1e-9
 
 
 def test_cost_tou_rate7_skips_demand_logs_debug(caplog: pytest.LogCaptureFixture) -> None:
@@ -522,6 +543,134 @@ def test_cost_tou_rate7_skips_demand_logs_debug(caplog: pytest.LogCaptureFixture
     # Rate 7 summer on-peak: same TOU prices as Rate 5 on-peak ($0.17441/kWh)
     assert result > 0
     assert "demand charge" in caplog.text.lower()
+
+
+# Phase 4: flat rate / gas cost calculation
+
+
+def test_rate_plan_is_flat_true_for_rate2() -> None:
+    """Rate 2 has a FlatUsageCharge — _rate_plan_is_flat returns True."""
+    from custom_components.dominionsc.cost import _rate_plan_is_flat
+
+    assert _rate_plan_is_flat(RATE_2) is True
+
+
+def test_rate_plan_is_flat_false_for_rate8() -> None:
+    """Rate 8 (tiered) has no FlatUsageCharge — _rate_plan_is_flat returns False."""
+    from custom_components.dominionsc.cost import _rate_plan_is_flat
+
+    assert _rate_plan_is_flat(RATE_8) is False
+
+
+def test_rate_plan_is_flat_true_for_rate_32s() -> None:
+    """Rate 32S (gas) has a FlatUsageCharge — _rate_plan_is_flat returns True."""
+    from dominionsc import RATE_32S
+
+    from custom_components.dominionsc.cost import _rate_plan_is_flat
+
+    assert _rate_plan_is_flat(RATE_32S) is True
+
+
+def test_calculate_flat_cost_gas_32s_100_ft3() -> None:
+    """Rate 32S: 100 ft³ = 1 therm × $2.04149/therm = $2.04149."""
+    from dominionsc import RATE_32S
+
+    from custom_components.dominionsc.cost import _calculate_flat_cost
+
+    result = _calculate_flat_cost(100.0, RATE_32S)
+    assert abs(result - 2.04149) < 1e-9
+
+
+def test_calculate_flat_cost_gas_32v_100_ft3() -> None:
+    """Rate 32V: 100 ft³ = 1 therm × $1.91847/therm = $1.91847."""
+    from dominionsc import RATE_32V
+
+    from custom_components.dominionsc.cost import _calculate_flat_cost
+
+    result = _calculate_flat_cost(100.0, RATE_32V)
+    assert abs(result - 1.91847) < 1e-9
+
+
+def test_calculate_flat_cost_rate2_electric() -> None:
+    """Rate 2 electric: 1000 Wh = 1 kWh × $0.13111/kWh = $0.13111."""
+    from custom_components.dominionsc.cost import _calculate_flat_cost
+
+    result = _calculate_flat_cost(1000.0, RATE_2)
+    assert abs(result - 0.13111) < 1e-9
+
+
+def test_calculate_flat_cost_no_flat_charge_returns_zero() -> None:
+    """A plan with no FlatUsageCharge (e.g. Rate 8) returns 0.0."""
+    from custom_components.dominionsc.cost import _calculate_flat_cost
+
+    assert _calculate_flat_cost(1000.0, RATE_8) == 0.0
+
+
+def test_cost_for_wh_gas_rate_32s_dispatch() -> None:
+    """_calculate_cost_for_wh dispatches Rate 32S to flat gas calculation."""
+    from dominionsc import RATE_32S
+
+    from custom_components.dominionsc.const import COST_MODE_RATE_32S
+
+    # 100 ft³ on 2026-09-01 (after effective date 2026-07-01)
+    result = _calculate_cost_for_wh(
+        100.0, datetime(2026, 9, 1), 0, COST_MODE_RATE_32S, 0, RATE_32S
+    )
+    assert abs(result - 2.04149) < 1e-9
+
+
+def test_cost_for_wh_gas_rate_32s_before_effective() -> None:
+    """Gas interval before rate effective date (2026-07-01) returns $0.0."""
+    from dominionsc import RATE_32S
+
+    from custom_components.dominionsc.const import COST_MODE_RATE_32S
+
+    result = _calculate_cost_for_wh(
+        100.0, datetime(2025, 9, 1), 0, COST_MODE_RATE_32S, 0, RATE_32S
+    )
+    assert result == 0.0
+
+
+def test_resolve_gas_cost_config_default_none() -> None:
+    """No CONF_GAS_COST_MODE in options → defaults to COST_MODE_NONE, plan=None."""
+    from custom_components.dominionsc.cost import _resolve_gas_cost_config
+
+    gas_mode, gas_plan = _resolve_gas_cost_config({})
+    assert gas_mode == COST_MODE_NONE
+    assert gas_plan is None
+
+
+def test_resolve_gas_cost_config_rate_32s() -> None:
+    """CONF_GAS_COST_MODE=rate_32s resolves to RATE_32S."""
+    from dominionsc import RATE_32S
+
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+    from custom_components.dominionsc.cost import _resolve_gas_cost_config
+
+    gas_mode, gas_plan = _resolve_gas_cost_config({CONF_GAS_COST_MODE: COST_MODE_RATE_32S})
+    assert gas_mode == COST_MODE_RATE_32S
+    assert gas_plan is RATE_32S
+
+
+def test_resolve_gas_cost_config_rate_32v() -> None:
+    """CONF_GAS_COST_MODE=rate_32v resolves to RATE_32V."""
+    from dominionsc import RATE_32V
+
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32V
+    from custom_components.dominionsc.cost import _resolve_gas_cost_config
+
+    gas_mode, gas_plan = _resolve_gas_cost_config({CONF_GAS_COST_MODE: COST_MODE_RATE_32V})
+    assert gas_mode == COST_MODE_RATE_32V
+    assert gas_plan is RATE_32V
+
+
+def test_gas_cost_statistic_id_distinct_from_electric() -> None:
+    """Gas and electric cost IDs are distinct for the same service address."""
+    electric_cid, electric_cost_id, _ = _build_statistic_ids("123 Main St", "ELECTRIC")
+    gas_cid, gas_cost_id, _ = _build_statistic_ids("123 Main St", "GAS")
+    assert gas_cost_id != electric_cost_id
+    assert gas_cost_id == f"{DOMAIN}:123_main_st_gas_energy_cost"
+    assert electric_cost_id == f"{DOMAIN}:123_main_st_electric_energy_cost"
 
 
 def test_billing_gap_january() -> None:
@@ -778,6 +927,107 @@ async def test_insert_existing_stat_runs_update(
         result = await coordinator._insert_statistics(["ELECTRIC"], "address", forecast)
     assert result == {}
     update.assert_awaited_once()
+
+
+async def test_insert_electric_with_cost_mode_none_nullifies_cost_id(
+    hass: HomeAssistant,
+) -> None:
+    """ELECTRIC account with COST_MODE_NONE → cost_id nullified in _process_account."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={CONF_COST_MODE: COST_MODE_NONE},
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch("custom_components.dominionsc.coordinator.create_cookie_jar", return_value=MagicMock()),
+        patch("custom_components.dominionsc.coordinator.async_create_clientsession", return_value=MagicMock()),
+    ):
+        coord = DominionSCCoordinator(hass, entry)
+        coord.api = MagicMock()
+        coord.api.get_timezone = MagicMock(return_value="UTC")
+
+    recorder = MagicMock()
+    recorder.async_add_executor_job = AsyncMock(return_value={})
+    forecast = SimpleNamespace(start_date=date.today(), end_date=date.today())
+    coord.api.async_get_register_reads = AsyncMock(return_value=[])
+    with (
+        patch("custom_components.dominionsc.coordinator.get_instance", return_value=recorder),
+        patch.object(coord, "_backfill_statistics", new=AsyncMock()) as m_back,
+    ):
+        await coord._insert_statistics(["ELECTRIC"], "123 Main", forecast)
+    # _backfill_statistics called with metadata that has cost_id=None (COST_MODE_NONE)
+    m_back.assert_awaited_once()
+    call_meta = m_back.call_args[0][0]
+    assert call_meta.cost_id is None
+
+
+async def test_insert_gas_with_gas_cost_mode_preserves_cost_id(
+    hass: HomeAssistant,
+) -> None:
+    """GAS account with gas cost mode configured → cost_id preserved in _process_account."""
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch("custom_components.dominionsc.coordinator.create_cookie_jar", return_value=MagicMock()),
+        patch("custom_components.dominionsc.coordinator.async_create_clientsession", return_value=MagicMock()),
+    ):
+        coord = DominionSCCoordinator(hass, entry)
+        coord.api = MagicMock()
+        coord.api.get_timezone = MagicMock(return_value="UTC")
+
+    recorder = MagicMock()
+    recorder.async_add_executor_job = AsyncMock(return_value={})
+    forecast = SimpleNamespace(start_date=date.today(), end_date=date.today())
+    coord.api.async_get_register_reads = AsyncMock(return_value=[])
+    with (
+        patch("custom_components.dominionsc.coordinator.get_instance", return_value=recorder),
+        patch.object(coord, "_backfill_statistics", new=AsyncMock()) as m_back,
+    ):
+        await coord._insert_statistics(["GAS"], "123 Main", forecast)
+    # cost_id preserved (not nullified) because gas cost mode is active
+    m_back.assert_awaited_once()
+    call_meta = m_back.call_args[0][0]
+    assert call_meta.cost_id is not None
+
+
+async def test_insert_unknown_account_type_nullifies_cost_id(
+    hass: HomeAssistant,
+) -> None:
+    """Unknown account type (not ELECTRIC or GAS) → cost_id nullified in _process_account."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "u", CONF_PASSWORD: "p"},
+        options={},
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch("custom_components.dominionsc.coordinator.create_cookie_jar", return_value=MagicMock()),
+        patch("custom_components.dominionsc.coordinator.async_create_clientsession", return_value=MagicMock()),
+    ):
+        coord = DominionSCCoordinator(hass, entry)
+        coord.api = MagicMock()
+        coord.api.get_timezone = MagicMock(return_value="UTC")
+
+    recorder = MagicMock()
+    recorder.async_add_executor_job = AsyncMock(return_value={})
+    forecast = SimpleNamespace(start_date=date.today(), end_date=date.today())
+    coord.api.async_get_register_reads = AsyncMock(return_value=[])
+    with (
+        patch("custom_components.dominionsc.coordinator.get_instance", return_value=recorder),
+        patch.object(coord, "_backfill_statistics", new=AsyncMock()) as m_back,
+    ):
+        await coord._insert_statistics(["SOLAR"], "123 Main", forecast)
+    # Unknown account type → cost_id nullified
+    m_back.assert_awaited_once()
+    call_meta = m_back.call_args[0][0]
+    assert call_meta.cost_id is None
 
 
 async def test_insert_already_started_backfill_is_skipped(
@@ -1206,7 +1456,7 @@ def test_aggregate_hourly_data_all_paths(coordinator: DominionSCCoordinator) -> 
         rows, metadata(), forecast, first.date(), True, existing_hours=existing
     ) == ({}, {})
 
-    # GAS account → no cost dict
+    # GAS account with no cost_id → no cost dict
     assert (
         coordinator._aggregate_hourly_data(
             rows, metadata("GAS", None), forecast, first.date(), False
@@ -1238,6 +1488,30 @@ def test_aggregate_fixed_cost_path_with_rows(
     )
     assert consumption
     assert costs
+
+
+def test_aggregate_gas_with_cost_mode_produces_cost_dict(
+    coordinator: DominionSCCoordinator,
+) -> None:
+    """GAS account with CONF_GAS_COST_MODE=rate_32s produces a cost dict."""
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    object.__setattr__(
+        coordinator.config_entry,
+        "options",
+        {CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+    # Interval: 100 ft³ on 2026-09-01 (after effective date); cost = 1 therm × $2.04149
+    when = datetime(2026, 9, 1, 10, 15, 0)
+    forecast = SimpleNamespace(start_date=when.date(), end_date=when.date())
+    read = SimpleNamespace(start_time=when, end_time=when, consumption=100.0)
+    gas_meta = metadata("GAS", "dominionsc:addr_gas_energy_cost")
+    _, costs = coordinator._aggregate_hourly_data(
+        [read], gas_meta, forecast, when.date(), False
+    )
+    assert len(costs) == 1
+    hour = when.replace(minute=0)
+    assert abs(costs[hour] - 2.04149) < 1e-6
 
 
 def test_aggregate_fixed_empty_and_tiered_existing(
@@ -1466,6 +1740,45 @@ async def test_process_gas_does_not_push_cost(
             existing_hours={when - timedelta(hours=1)},
         )
     assert push.call_count == 1
+
+
+async def test_process_gas_with_cost_mode_pushes_cost_statistics(
+    coordinator: DominionSCCoordinator,
+) -> None:
+    """GAS account with cost_id set and positive cost → 2 push calls (consumption + cost)."""
+    coordinator.api.get_timezone.return_value = "UTC"
+    when = datetime.now().replace(minute=15, second=0, microsecond=0)
+    coordinator.api.async_get_usage_reads = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                start_time=when, end_time=when + timedelta(hours=1), consumption=100
+            )
+        ]
+    )
+    hour = when.replace(minute=0)
+    with (
+        patch.object(
+            coordinator,
+            "_aggregate_hourly_data",
+            # Non-zero cost → should trigger cost push
+            return_value=({hour: 100.0}, {hour: 2.04149}),
+        ),
+        patch(
+            "custom_components.dominionsc.coordinator.async_add_external_statistics"
+        ) as push,
+    ):
+        await coordinator._process_and_insert_statistics(
+            metadata("GAS", "dominionsc:addr_gas_energy_cost"),
+            when.date(),
+            when.date(),
+            50,
+            0,
+            when,
+            {},
+            SimpleNamespace(start_date=when.date(), end_date=when.date()),
+        )
+    # Two push calls: one for consumption, one for cost
+    assert push.call_count == 2
 
 
 async def test_process_zero_filter_and_no_aggregate_output(

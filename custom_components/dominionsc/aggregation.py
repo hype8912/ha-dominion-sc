@@ -163,7 +163,9 @@ def aggregate_hourly_data(
         # cumulative_wh stays correct even for already-recorded hours.
         # If we skipped this for already-recorded hours, cumulative_wh would
         # be wrong for subsequent intervals and tier splits would be incorrect.
-        if is_electric and metadata.cost_id:
+        # Gas rates are flat (is_tiered_rate=False), so this block is a no-op
+        # for gas accounts even though the outer condition now covers them.
+        if metadata.cost_id:
             if is_tiered_rate and billing_cycles:
                 row_cycle = _find_billing_cycle_for_date(interval_date, billing_cycles)
                 if row_cycle != current_cycle:
@@ -183,8 +185,11 @@ def aggregate_hourly_data(
             hourly_consumption[hour_start] = 0.0
         hourly_consumption[hour_start] += usage_read.consumption
 
-        # --- Calculate cost (electric accounts only) ---
-        if is_electric and metadata.cost_id:
+        # --- Calculate cost (electric and gas accounts when a rate is configured) ---
+        # For gas accounts, interval_usage is in ft³ and cost_mode is the gas
+        # rate mode; _calculate_cost_for_wh handles the ft³ → therm conversion
+        # inside _calculate_flat_cost based on rate_plan.commodity.
+        if metadata.cost_id:
             # Honour the cost_start_date gate: when consumption is backfilled
             # further than cost (user only enabled one of the two extended
             # backfill options), skip cost rows for the early window.

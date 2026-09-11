@@ -68,8 +68,9 @@ def _build_statistic_ids(
     Returns:
         A 3-tuple:
         - ``consumption_statistic_id`` (str): HA statistic ID for energy use.
-        - ``cost_statistic_id`` (str | None): HA statistic ID for cost in USD,
-          or ``None`` for non-ELECTRIC accounts (gas has no cost statistic).
+        - ``cost_statistic_id`` (str): HA statistic ID for cost in USD.
+          The coordinator nullifies this value for accounts where no cost mode
+          is active (e.g. ``CONF_GAS_COST_MODE == COST_MODE_NONE``).
         - ``name_prefix`` (Template): produces human-readable display names via
           ``name_prefix.substitute(stat_type="consumption")`` or
           ``name_prefix.substitute(stat_type="cost")``.
@@ -78,7 +79,11 @@ def _build_statistic_ids(
     clean_addr = clean_service_addr(service_addr_account_no)
     id_prefix = (f"{clean_addr}_{account}").lower().replace("-", "_")
     consumption_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
-    cost_id = f"{DOMAIN}:{id_prefix}_energy_cost" if account == "ELECTRIC" else None
+    # Cost IDs are generated for both ELECTRIC and GAS accounts so that gas cost
+    # statistics can be written when a gas rate plan is selected. The coordinator
+    # nullifies the cost_id for accounts where no cost mode is active (i.e. when
+    # CONF_GAS_COST_MODE == COST_MODE_NONE).
+    cost_id = f"{DOMAIN}:{id_prefix}_energy_cost"
     name_prefix = Template(f"{account.title()} $stat_type {service_addr_account_no}")
     return consumption_id, cost_id, name_prefix
 
@@ -149,7 +154,7 @@ def _build_register_statistic_ids(
     safe_up = usage_point_id.lower().replace("-", "_")
     id_prefix = (f"{clean_addr}_{account}_{safe_up}").lower().replace("-", "_")
     consumption_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
-    cost_id = f"{DOMAIN}:{id_prefix}_energy_cost" if account == "ELECTRIC" else None
+    cost_id = f"{DOMAIN}:{id_prefix}_energy_cost"
 
     # Use only the last 6 digits of the UsagePoint ID in the display name —
     # enough for a user to match it to a physical meter label while keeping the

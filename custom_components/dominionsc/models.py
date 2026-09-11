@@ -47,8 +47,10 @@ class DominionSCStatisticMetadata:
                          This ID is what the HA Energy Dashboard uses.
         cost_id:         Full HA statistic ID for cost in USD, e.g.
                          ``"dominionsc:123_main_st_electric_energy_cost"``.
-                         ``None`` for non-ELECTRIC accounts (gas has no cost
-                         statistic) and when the cost mode is COST_MODE_NONE.
+                         ``None`` when the cost mode is ``COST_MODE_NONE`` or
+                         no cost mode is configured for this account type.
+                         Set for both ELECTRIC and GAS accounts when a rate
+                         plan is selected.
         name_prefix:     A :class:`~string.Template` that produces human-readable
                          names for both the consumption and cost statistics.
                          Call ``name_prefix.substitute(stat_type="consumption")``

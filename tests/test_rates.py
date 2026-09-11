@@ -2,24 +2,28 @@
 
 from datetime import date
 
-from dominionsc import RATE_2, RATE_5, RATE_6, RATE_7, RATE_8, RatePlan
+from dominionsc import RATE_2, RATE_32S, RATE_32V, RATE_5, RATE_6, RATE_7, RATE_8, RatePlan
 
 from custom_components.dominionsc.const import (
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_2,
+    COST_MODE_RATE_32S,
+    COST_MODE_RATE_32V,
     COST_MODE_RATE_5,
     COST_MODE_RATE_6,
     COST_MODE_RATE_7,
     COST_MODE_RATE_8,
 )
 from custom_components.dominionsc.rates import (
+    GAS_RATE_PLAN_REGISTRY,
     HISTORICAL_RATE_REGISTRY,
     RATE_PLAN_REGISTRY,
     _RATE_6_2025,
     _RATE_8_2025,
     _HistoricalTieredRate,
     build_cost_mode_choices,
+    build_gas_cost_mode_choices,
 )
 
 
@@ -174,3 +178,51 @@ def test_build_cost_mode_choices_uses_library_name_for_new_plans() -> None:
     assert choices[COST_MODE_RATE_5] == RATE_5.name
     assert choices[COST_MODE_RATE_7] == RATE_7.name
     assert choices[COST_MODE_RATE_2] == RATE_2.name
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Gas rate plan registry and choices
+# ---------------------------------------------------------------------------
+
+
+def test_gas_rate_plan_registry_contains_rate_32s() -> None:
+    plan = GAS_RATE_PLAN_REGISTRY.get(COST_MODE_RATE_32S)
+    assert plan is not None
+    assert isinstance(plan, RatePlan)
+    assert plan is RATE_32S
+
+
+def test_gas_rate_plan_registry_contains_rate_32v() -> None:
+    plan = GAS_RATE_PLAN_REGISTRY.get(COST_MODE_RATE_32V)
+    assert plan is not None
+    assert isinstance(plan, RatePlan)
+    assert plan is RATE_32V
+
+
+def test_gas_rate_plan_registry_has_exactly_two_modes() -> None:
+    assert set(GAS_RATE_PLAN_REGISTRY.keys()) == {COST_MODE_RATE_32S, COST_MODE_RATE_32V}
+
+
+def test_build_gas_cost_mode_choices_contains_expected_keys() -> None:
+    choices = build_gas_cost_mode_choices()
+    assert COST_MODE_NONE in choices
+    assert COST_MODE_RATE_32S in choices
+    assert COST_MODE_RATE_32V in choices
+
+
+def test_build_gas_cost_mode_choices_none_is_first() -> None:
+    choices = build_gas_cost_mode_choices()
+    assert list(choices)[0] == COST_MODE_NONE
+
+
+def test_build_gas_cost_mode_choices_uses_library_plan_names() -> None:
+    choices = build_gas_cost_mode_choices()
+    assert choices[COST_MODE_RATE_32S] == RATE_32S.name
+    assert choices[COST_MODE_RATE_32V] == RATE_32V.name
+
+
+def test_build_gas_cost_mode_choices_excludes_electric_modes() -> None:
+    choices = build_gas_cost_mode_choices()
+    assert COST_MODE_RATE_8 not in choices
+    assert COST_MODE_RATE_5 not in choices
+    assert COST_MODE_FIXED not in choices

@@ -27,7 +27,15 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from dominionsc import DemandCharge, RatePlan, Season, TieredUsageCharge, TimeOfUseCharge
+from dominionsc import (
+    Commodity,
+    DemandCharge,
+    FlatUsageCharge,
+    RatePlan,
+    Season,
+    TieredUsageCharge,
+    TimeOfUseCharge,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,12 +44,18 @@ _UTILITY_TZ = ZoneInfo("America/New_York")
 from .const import (
     CONF_COST_MODE,
     CONF_FIXED_RATE,
+    CONF_GAS_COST_MODE,
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_8,
     DEFAULT_FIXED_RATE,
 )
-from .rates import HISTORICAL_RATE_REGISTRY, RATE_PLAN_REGISTRY, _HistoricalTieredRate
+from .rates import (
+    GAS_RATE_PLAN_REGISTRY,
+    HISTORICAL_RATE_REGISTRY,
+    RATE_PLAN_REGISTRY,
+    _HistoricalTieredRate,
+)
 
 if TYPE_CHECKING:
     pass
@@ -195,6 +209,75 @@ def _rate_plan_has_demand(rate_plan: RatePlan) -> bool:
     return any(isinstance(c, DemandCharge) for c in rate_plan.charges)
 
 
+def _rate_plan_is_flat(rate_plan: RatePlan) -> bool:
+    """Return True if *rate_plan* contains a ``FlatUsageCharge`` (Rate 2 or gas plans)."""
+    return any(isinstance(c, FlatUsageCharge) for c in rate_plan.charges)
+
+
+def _calculate_flat_cost(
+    interval_usage: float,
+    rate_plan: RatePlan,
+) -> float:
+    """
+    Calculate cost for a single interval under a ``FlatUsageCharge``.
+
+    Handles both gas rates (Rate 32S, Rate 32V) and flat electric rates (Rate 2).
+    The ``interval_usage`` argument is interpreted differently by commodity:
+
+    - **Gas** (``Commodity.GAS``): ``interval_usage`` is in **ft³**. Converted to
+      therms by dividing by 100 before multiplying by the $/therm charge.
+    - **Electric** (``Commodity.ELECTRICITY``): ``interval_usage`` is in **Wh**.
+      Converted to kWh by dividing by 1000 before multiplying by the $/kWh charge.
+
+    Args:
+        interval_usage: Wh consumed (electric) or ft³ consumed (gas) in this interval.
+        rate_plan:      Library :class:`~dominionsc.RatePlan` containing the
+                        ``FlatUsageCharge`` to apply.
+
+    Returns:
+        Cost in dollars, or 0.0 if no ``FlatUsageCharge`` is found.
+
+    """
+    for charge in rate_plan.charges:
+        if not isinstance(charge, FlatUsageCharge):
+            continue
+        if rate_plan.commodity == Commodity.GAS:
+            # interval_usage is in ft³; 1 therm = 100 ft³
+            therms = interval_usage / 100.0
+            return therms * float(charge.price_per_unit)
+        else:
+            # Electric flat rate (Rate 2): interval_usage is in Wh
+            kwh = interval_usage / 1000.0
+            return kwh * float(charge.price_per_unit)
+    return 0.0
+
+
+def _resolve_gas_cost_config(
+    options: dict[str, Any],
+) -> tuple[str, RatePlan | None]:
+    """
+    Unpack gas cost configuration from an options dict with safe defaults.
+
+    Analogous to :func:`_resolve_cost_config` but for gas accounts.
+
+    Args:
+        options: The config entry's ``options`` dict (``entry.options``).
+
+    Returns:
+        A 2-tuple:
+        - ``gas_cost_mode`` (str): one of ``COST_MODE_NONE``, ``COST_MODE_RATE_32S``,
+          or ``COST_MODE_RATE_32V``. Defaults to ``COST_MODE_NONE`` when no mode
+          is stored (no gas cost calculation by default).
+        - ``gas_rate_plan`` (:class:`dominionsc.RatePlan` | ``None``):
+          the library rate plan for the selected gas mode, or ``None`` for
+          ``COST_MODE_NONE`` or an unrecognised key.
+
+    """
+    gas_cost_mode = options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
+    gas_rate_plan: RatePlan | None = GAS_RATE_PLAN_REGISTRY.get(gas_cost_mode)
+    return gas_cost_mode, gas_rate_plan
+
+
 def _calculate_tou_cost(
     interval_wh: float,
     interval_dt: datetime,
@@ -286,9 +369,12 @@ def _calculate_cost_for_wh(
            the interval falls within a superseded tariff period, delegates to
            :func:`_calculate_historical_tiered_cost`. Otherwise, if the interval
            is on or after ``rate_plan.effective_from``, dispatches to
-           :func:`_calculate_tiered_cost` (tiered plans) or
-           :func:`_calculate_tou_cost` (TOU plans). Intervals before all known
-           rate periods return 0.0.
+           :func:`_calculate_tiered_cost` (tiered plans),
+           :func:`_calculate_tou_cost` (TOU plans), or
+           :func:`_calculate_flat_cost` (flat plans — Rate 2 electric, Rate 32S/32V
+           gas). For gas plans ``interval_wh`` carries ft³, not Wh; the unit
+           conversion is handled inside :func:`_calculate_flat_cost`.
+           Intervals before all known rate periods return 0.0.
         4. Unknown mode (``rate_plan`` is ``None``) → 0.0 (safe fallback).
 
     Args:
@@ -345,6 +431,8 @@ def _calculate_cost_for_wh(
                 )
             if _rate_plan_is_tou(rate_plan):
                 return _calculate_tou_cost(interval_wh, interval_dt, rate_plan)
+            if _rate_plan_is_flat(rate_plan):
+                return _calculate_flat_cost(interval_wh, rate_plan)
 
         # Interval predates all known rate periods → no cost.
         return 0.0

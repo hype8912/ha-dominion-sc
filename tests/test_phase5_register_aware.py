@@ -110,12 +110,13 @@ class TestBuildRegisterStatisticIds:
         )
         assert register_id != legacy_id
 
-    def test_multi_register_cost_id_only_for_electric(self) -> None:
-        """Non-ELECTRIC accounts never get a cost statistic, register-aware or not."""
+    def test_multi_register_gas_cost_id_generated(self) -> None:
+        """GAS accounts now get a cost_id; coordinator nullifies it when no gas mode active."""
         _, cost_id, _ = _build_register_statistic_ids(
             "123 Main St", "GAS", usage_point_id="ABC123", is_sole_register=False
         )
-        assert cost_id is None
+        # Phase 4: gas cost IDs are generated so gas cost stats can be written.
+        assert cost_id == "dominionsc:123_main_st_gas_abc123_energy_cost"
 
     def test_multi_register_name_includes_meter_suffix(self) -> None:
         """The display name distinguishes registers via trailing UsagePoint digits."""

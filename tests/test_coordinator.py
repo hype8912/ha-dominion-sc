@@ -530,6 +530,29 @@ def test_cost_flat_rate2_calculates_correctly() -> None:
     assert abs(result - 0.13111) < 1e-9
 
 
+# Phase 5: Rate 2 specific test checklist
+
+
+def test_cost_rate2_500wh() -> None:
+    """Rate 2: 500 Wh × $0.13111/kWh = $0.065555."""
+    from custom_components.dominionsc.const import COST_MODE_RATE_2
+
+    result = _calculate_cost_for_wh(
+        500, datetime(2026, 8, 1), 0, COST_MODE_RATE_2, 0, RATE_2
+    )
+    assert abs(result - 0.065555) < 1e-9
+
+
+def test_cost_rate2_before_effective_date_returns_zero() -> None:
+    """Rate 2 interval before 2026-07-01 returns $0.0 (effective date gate)."""
+    from custom_components.dominionsc.const import COST_MODE_RATE_2
+
+    result = _calculate_cost_for_wh(
+        500, datetime(2025, 6, 1), 0, COST_MODE_RATE_2, 0, RATE_2
+    )
+    assert result == 0.0
+
+
 def test_cost_tou_rate7_skips_demand_logs_debug(caplog: pytest.LogCaptureFixture) -> None:
     """Rate 7 TOU cost is calculated; demand charge is skipped with a debug log."""
     import logging

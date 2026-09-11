@@ -31,7 +31,7 @@
         "data_description": {
           "cost_mode": "How to calculate energy costs"
         },
-        "description": "Select how energy costs are calculated.",
+        "description": "Select how energy costs are calculated.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.",
         "title": "Cost Calculation Settings"
       },
       "cost_mode_fixed_rate": {

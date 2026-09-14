@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone as dt_timezone
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -48,7 +48,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, clean_service_addr
+from .const import CONF_GAS_COST_MODE, COST_MODE_NONE, DOMAIN, clean_service_addr
 from .coordinator import (
     DominionSCAccountData,
     DominionSCConfigEntry,
@@ -83,6 +83,10 @@ class DominionSCEntityDescription(SensorEntityDescription):
     value_fn: Callable[
         [DominionSCAccountData | DominionSCData], str | float | date | datetime | None
     ]
+    # Optional: return the UTC datetime at which a TOTAL sensor last reset.
+    # Only needed for sensors whose value resets mid-stream (e.g. cost_to_date
+    # resets at the start of each billing cycle).
+    last_reset_fn: Callable[[DominionSCData], datetime | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +126,10 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         suggested_display_precision=2,
         # Cost accumulated so far in the current billing cycle (from Dominion API).
         value_fn=lambda data: data.forecast.cost_to_date if data.forecast else None,
+        # Signal the billing cycle start so HA correctly handles the monthly reset.
+        last_reset_fn=lambda data: datetime.combine(
+            data.forecast.start_date, datetime.min.time(), tzinfo=dt_timezone.utc
+        ) if data.forecast else None,
     ),
     DominionSCEntityDescription(
         key="forecasted_cost",
@@ -129,7 +137,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         device_class=SensorDeviceClass.MONETARY,
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement="USD",
-        state_class=SensorStateClass.TOTAL,
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
         # Dominion's projected end-of-cycle cost based on current usage trend.
         value_fn=lambda data: data.forecast.forecasted_cost if data.forecast else None,
@@ -140,7 +148,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         device_class=SensorDeviceClass.MONETARY,
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement="USD",
-        state_class=SensorStateClass.TOTAL,
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
         # Historical average cost for this time of year (from Dominion API).
         value_fn=lambda data: data.forecast.typical_cost if data.forecast else None,
@@ -255,8 +263,13 @@ async def async_setup_entry(
             for sensor in BILLING_SENSORS
         )
 
-    # Register gas cost sensor only when gas cost statistics are present.
-    if dominionsc_data.gas_cost_to_date is not None:
+    # Register gas cost sensor when the user has a GAS account and has chosen a
+    # gas rate plan. The sensor returns None (unavailable) until the first gas
+    # cost statistics are committed to the recorder — registering it based on
+    # options rather than data ensures it appears immediately on a fresh install
+    # rather than requiring a reload after the first poll cycle.
+    gas_cost_mode = entry.options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
+    if "GAS" in accounts_data and gas_cost_mode != COST_MODE_NONE:
         entities.append(
             DominionSCSensor(
                 coordinator,
@@ -336,3 +349,17 @@ class DominionSCSensor(CoordinatorEntity[DominionSCCoordinator], SensorEntity):
 
         # Account sensors operate on the per-account data slice.
         return self.entity_description.value_fn(coordinator_data.accounts[self.account])
+
+    @property
+    def last_reset(self) -> datetime | None:
+        """
+        Return when a TOTAL sensor's value last reset to zero.
+
+        Only populated for sensors that supply a ``last_reset_fn`` in their
+        descriptor (currently ``cost_to_date``, which resets at the start of
+        each billing cycle). HA uses this to correctly detect the monthly reset
+        and avoid misclassifying the drop as a negative delta.
+        """
+        if self.entity_description.last_reset_fn is None:
+            return None
+        return self.entity_description.last_reset_fn(self.coordinator.data)

@@ -75,6 +75,7 @@ from .const import (
     CONF_FIXED_RATE,
     CONF_GAS_COST_MODE,
     CONF_LOGIN_DATA,
+    CONF_SERVICE_ADDR,
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_8,
@@ -133,15 +134,14 @@ async def _validate_login(
 async def _fetch_accounts(
     hass: HomeAssistant,
     data: Mapping[str, Any],
-) -> list[str]:
+) -> tuple[list[str], str]:
     """
-    Fetch the list of account type strings after a successful login.
+    Fetch the list of account type strings and service address after a successful login.
 
     Creates a fresh API client using the stored credentials and calls
-    ``async_get_accounts()``. Returns the raw account list (e.g.
-    ``["ELECTRIC", "GAS"]``). Returns an empty list if any network or API
-    error occurs so that callers can treat accounts as unknown and skip
-    account-specific flow steps.
+    ``async_get_accounts()``. Returns a tuple of (account_list, service_addr).
+    Returns ``([], "")`` if any network or API error occurs so that callers can
+    treat accounts as unknown and skip account-specific flow steps.
 
     Args:
         hass: The Home Assistant instance.
@@ -149,7 +149,8 @@ async def _fetch_accounts(
               optionally ``CONF_LOGIN_DATA``.
 
     Returns:
-        List of account type strings, or ``[]`` on error.
+        Tuple of (list of account type strings, service address string).
+        Both are empty on error.
     """
     try:
         api = DominionSC(
@@ -159,10 +160,10 @@ async def _fetch_accounts(
             data.get(CONF_LOGIN_DATA),
         )
         await api.async_login()
-        accounts, _ = await api.async_get_accounts()
-        return list(accounts)
+        accounts, service_addr = await api.async_get_accounts()
+        return list(accounts), service_addr
     except (CannotConnect, ApiException, InvalidAuth):
-        return []
+        return [], ""
 
 
 class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -254,7 +255,9 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("API structure error during login: %s", err)
                 errors["base"] = "unknown"
             else:
-                self._accounts = await _fetch_accounts(self.hass, self._data)
+                self._accounts, service_addr = await _fetch_accounts(self.hass, self._data)
+                if service_addr:
+                    self._data[CONF_SERVICE_ADDR] = service_addr
                 return await self.async_step_backfill_options()
 
         schema_dict: VolDictType = {
@@ -361,7 +364,9 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                 # in CONF_LOGIN_DATA allows future logins to bypass TFA entirely.
                 self._data[CONF_LOGIN_DATA] = login_data
                 if self.source != SOURCE_REAUTH:
-                    self._accounts = await _fetch_accounts(self.hass, self._data)
+                    self._accounts, service_addr = await _fetch_accounts(self.hass, self._data)
+                    if service_addr:
+                        self._data[CONF_SERVICE_ADDR] = service_addr
                 if self.source == SOURCE_REAUTH:
                     # Reauth only refreshes credentials — skip backfill/cost-mode.
                     return self.async_update_reload_and_abort(

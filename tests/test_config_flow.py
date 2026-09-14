@@ -23,6 +23,7 @@ from custom_components.dominionsc.const import (
     CONF_FIXED_RATE,
     CONF_GAS_COST_MODE,
     CONF_LOGIN_DATA,
+    CONF_SERVICE_ADDR,
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_32S,
@@ -179,8 +180,39 @@ async def test_user_flow_success_rate_8(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == f"Dominion Energy SC ({user_input[CONF_USERNAME]})"
-    assert result["data"] == user_input
+    assert result["data"][CONF_USERNAME] == user_input[CONF_USERNAME]
+    assert result["data"][CONF_PASSWORD] == user_input[CONF_PASSWORD]
+    assert result["data"][CONF_SERVICE_ADDR] == "addr_123"
     assert result["options"] == {CONF_COST_MODE: COST_MODE_RATE_8}
+
+
+async def test_user_flow_service_addr_stored_in_entry_data(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """CONF_SERVICE_ADDR from the API is stored in entry.data when the flow completes."""
+    result = await _login_to_cost_mode(hass, user_input)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_SERVICE_ADDR] == "addr_123"
+
+
+async def test_fetch_accounts_returns_accounts_and_service_addr(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+) -> None:
+    """_fetch_accounts returns (accounts, service_addr) on success."""
+    mock_dominionsc_api.async_get_accounts.return_value = (["ELECTRIC"], "my_addr")
+    result = await _fetch_accounts(
+        hass, {CONF_USERNAME: "user", CONF_PASSWORD: "pass"}
+    )
+    assert result == (["ELECTRIC"], "my_addr")
 
 
 async def test_user_flow_success_rate_6(
@@ -1225,11 +1257,69 @@ async def test_fetch_accounts_returns_empty_on_api_error(
     hass: HomeAssistant,
     mock_dominionsc_api: AsyncMock,
 ) -> None:
-    """_fetch_accounts returns [] when async_get_accounts raises CannotConnect."""
+    """_fetch_accounts returns ([], "") when async_get_accounts raises CannotConnect."""
     from dominionsc.exceptions import CannotConnect
 
     mock_dominionsc_api.async_get_accounts.side_effect = CannotConnect("error")
     result = await _fetch_accounts(
         hass, {CONF_USERNAME: "user", CONF_PASSWORD: "pass"}
     )
-    assert result == []
+    assert result == ([], "")
+
+
+async def test_fetch_accounts_returns_empty_on_invalid_auth(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+) -> None:
+    """_fetch_accounts returns ([], "") when async_get_accounts raises InvalidAuth."""
+    from dominionsc.exceptions import InvalidAuth
+
+    mock_dominionsc_api.async_get_accounts.side_effect = InvalidAuth("bad creds")
+    result = await _fetch_accounts(
+        hass, {CONF_USERNAME: "user", CONF_PASSWORD: "pass"}
+    )
+    assert result == ([], "")
+
+
+async def test_fetch_accounts_returns_empty_on_api_exception(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+) -> None:
+    """_fetch_accounts returns ([], "") when async_get_accounts raises ApiException."""
+    from dominionsc.exceptions import ApiException
+
+    mock_dominionsc_api.async_get_accounts.side_effect = ApiException(
+        "api fail", "https://test.com"
+    )
+    result = await _fetch_accounts(
+        hass, {CONF_USERNAME: "user", CONF_PASSWORD: "pass"}
+    )
+    assert result == ([], "")
+
+
+async def test_options_flow_gas_cost_mode_rate32s_saved(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Options flow end-to-end: gas account present, Rate 32S selected, verified in saved options."""
+    # Arrange
+    entry = _make_entry(hass, user_input)
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.recalculation_lock.locked.return_value = False
+    mock_coordinator.data = MagicMock()
+    mock_coordinator.data.accounts = {"ELECTRIC": MagicMock(), "GAS": MagicMock()}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mock_coordinator
+
+    # Act
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    # Assert
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_GAS_COST_MODE] == COST_MODE_RATE_32S
+    assert result["data"][CONF_COST_MODE] == COST_MODE_NONE

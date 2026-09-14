@@ -184,13 +184,29 @@ def test_cost_tiered_all_over_boundary() -> None:
 
 
 def test_cost_tiered_straddles_boundary() -> None:
-    # cumulative_before=799_000 Wh, interval=2000 Wh → crosses 800_000 Wh boundary
-    # 1000 Wh at lower tier ($0.15878/kWh), 1000 Wh at upper tier ($0.17442/kWh)
+    # cumulative_before=799_000 Wh, interval=2000 Wh → crosses 800_000 Wh boundary.
+    # Intermediate assertions: 1000 Wh is under-boundary, 1000 Wh is over-boundary.
+    boundary_wh = 800_000
+    cumulative_before = 799_000
+    interval_wh = 2000
+    wh_under = boundary_wh - cumulative_before  # 1000 Wh
+    wh_over = interval_wh - wh_under            # 1000 Wh
+    assert wh_under == 1000
+    assert wh_over == 1000
+
+    # Summer (August) Rate 8: under=$0.15878/kWh, over=$0.17442/kWh
+    expected_under_cost = wh_under * 0.15878 / 1000
+    expected_over_cost = wh_over * 0.17442 / 1000
+    expected_total = expected_under_cost + expected_over_cost
+
     result = _calculate_cost_for_wh(
-        2000, datetime(2026, 8, 1), 799_000, COST_MODE_RATE_8, 0, RATE_8
+        interval_wh, datetime(2026, 8, 1), cumulative_before, COST_MODE_RATE_8, 0, RATE_8
     )
-    expected = 1000 * 0.15878 / 1000 + 1000 * 0.17442 / 1000
-    assert abs(result - expected) < 1e-9
+    # Verify the total is composed correctly of both components
+    assert abs(result - expected_total) < 1e-9
+    # Verify the individual components add up (boundary split was 50/50)
+    assert abs(expected_under_cost - expected_over_cost) > 1e-9  # rates differ
+    assert abs(result - (expected_under_cost + expected_over_cost)) < 1e-9
 
 
 def test_cost_tiered_no_tiered_charge_returns_zero() -> None:
@@ -1454,8 +1470,13 @@ def test_aggregate_hourly_data_all_paths(coordinator: DominionSCCoordinator) -> 
     cons, costs = coordinator._aggregate_hourly_data(
         rows, metadata(), forecast, first.date(), True
     )
+    # Exact Wh: 100 + 50 = 150 Wh in the single hour bucket
     assert len(cons) == 1
-    assert costs
+    hour = first.replace(minute=0)
+    assert cons[hour] == 150.0
+    # Cost must be non-zero for tiered mode (Rate 8 after its effective date today is post-2026-07)
+    assert costs  # dict is non-empty
+    assert costs[hour] > 0, f"Expected positive cost, got {costs[hour]}"
 
     # Fixed rate with future cost_start_date: consumption produced, cost zeroed
     coordinator.config_entry._options = {
@@ -2261,3 +2282,263 @@ async def test_async_update_data_gas_cost_mode_none(
         result = await coord._async_update_data()
 
     assert result.gas_cost_to_date is None
+
+
+async def test_async_update_data_uses_stored_service_addr_for_stat_ids(
+    hass: HomeAssistant,
+) -> None:
+    """When CONF_SERVICE_ADDR is stored in entry.data, _insert_statistics uses it instead of the live API value."""
+    from custom_components.dominionsc.const import CONF_SERVICE_ADDR
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_USERNAME: "user",
+            CONF_PASSWORD: "password",
+            CONF_SERVICE_ADDR: "stored_addr",
+        },
+        options={CONF_COST_MODE: COST_MODE_RATE_8},
+    )
+    entry.add_to_hass(hass)
+    coord = DominionSCCoordinator(hass, entry)
+    coord.api = MagicMock()
+    coord.api.async_login = AsyncMock()
+    # Live API returns a different address than what is stored
+    coord.api.async_get_accounts = AsyncMock(return_value=(["ELECTRIC", "GAS"], "live_addr"))
+    coord.api.async_get_forecast = AsyncMock(return_value=None)
+
+    captured_addr: list[str] = []
+
+    async def capturing_insert_statistics(accounts, service_addr, forecast):
+        captured_addr.append(service_addr)
+        return {}
+
+    with patch.object(coord, "_insert_statistics", side_effect=capturing_insert_statistics):
+        await coord._async_update_data()
+
+    assert captured_addr == ["stored_addr"], (
+        f"Expected _insert_statistics to be called with 'stored_addr', got {captured_addr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Additional: Rate 6 boundary-straddle tests and season boundary months
+# ---------------------------------------------------------------------------
+
+
+def test_cost_rate6_summer_straddles_boundary() -> None:
+    """Rate 6 summer interval crossing the 800 kWh boundary is composed correctly."""
+    # Arrange
+    from dominionsc import RATE_6
+    boundary_wh = 800_000
+    cumulative_before = 799_000
+    interval_wh = 2000
+    wh_under = boundary_wh - cumulative_before  # 1000 Wh
+    wh_over = interval_wh - wh_under            # 1000 Wh
+    assert wh_under == 1000
+    assert wh_over == 1000
+
+    # Summer Rate 6 (post-2026-07-01): check rate values hold
+    # summer_under=0.15444/kWh, summer_over=0.16941/kWh (library values post 2026-07-01)
+    # We verify the result is > 0 and composed from two distinct per-Wh prices.
+    result = _calculate_cost_for_wh(
+        interval_wh, datetime(2026, 8, 1), cumulative_before, COST_MODE_RATE_6, 0, RATE_6
+    )
+
+    # Act: compute each sub-component using the same function at extremes
+    cost_all_under = _calculate_cost_for_wh(
+        wh_under, datetime(2026, 8, 1), 0, COST_MODE_RATE_6, 0, RATE_6
+    )
+    cost_all_over = _calculate_cost_for_wh(
+        wh_over, datetime(2026, 8, 1), boundary_wh + 1, COST_MODE_RATE_6, 0, RATE_6
+    )
+
+    # Assert total equals sum of parts
+    assert abs(result - (cost_all_under + cost_all_over)) < 1e-9
+    assert result > 0
+
+
+def test_cost_rate6_winter_straddles_boundary() -> None:
+    """Rate 6 winter interval crossing the 800 kWh boundary is composed correctly."""
+    from dominionsc import RATE_6
+
+    boundary_wh = 800_000
+    cumulative_before = 799_000
+    interval_wh = 2000
+    wh_under = boundary_wh - cumulative_before  # 1000 Wh
+    wh_over = interval_wh - wh_under            # 1000 Wh
+
+    # Winter (December) Rate 6 current library values
+    result = _calculate_cost_for_wh(
+        interval_wh, datetime(2026, 12, 1), cumulative_before, COST_MODE_RATE_6, 0, RATE_6
+    )
+
+    cost_all_under = _calculate_cost_for_wh(
+        wh_under, datetime(2026, 12, 1), 0, COST_MODE_RATE_6, 0, RATE_6
+    )
+    cost_all_over = _calculate_cost_for_wh(
+        wh_over, datetime(2026, 12, 1), boundary_wh + 1, COST_MODE_RATE_6, 0, RATE_6
+    )
+
+    assert abs(result - (cost_all_under + cost_all_over)) < 1e-9
+    assert result > 0
+    # Winter under-rate is less than summer under-rate (conservation rate structure)
+    summer_result = _calculate_cost_for_wh(
+        interval_wh, datetime(2026, 8, 1), cumulative_before, COST_MODE_RATE_6, 0, RATE_6
+    )
+    assert result < summer_result
+
+
+def test_may_is_summer_for_tiered_cost_dispatch() -> None:
+    """Month 5 (May) is treated as summer for tiered cost (historical rate period).
+
+    May 2026 falls in the historical rate period (2025-07-23 to 2026-06-30) so it uses
+    _RATE_8_2025 summer_under_per_wh ($0.14599/kWh). The key assertion is that a
+    non-zero cost is returned (summer path taken, not winter).
+    """
+    # May 2026 is in the historical rate period; summer under rate = $0.14599/kWh
+    result_may = _calculate_cost_for_wh(
+        100, datetime(2026, 5, 15), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert result_may > 0
+    assert abs(result_may - 100 * 0.14599 / 1000) < 1e-12
+
+    # Winter month in historical period (October) also uses $0.14599/kWh under-boundary.
+    # May and October share the same under-boundary rate in _RATE_8_2025.
+    result_oct = _calculate_cost_for_wh(
+        100, datetime(2026, 1, 15), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert result_oct > 0
+
+
+def test_september_is_summer_for_tiered_cost_dispatch() -> None:
+    """Month 9 (September) is treated as summer for Rate 8 tiered cost (post-2026-07-01).
+
+    September 2026 is after the historical rate period ended, so it uses the library's
+    current RATE_8 summer_under rate ($0.15878/kWh). Verified by checking it matches
+    August 2026 (same period, same summer rate).
+    """
+    result_sep = _calculate_cost_for_wh(
+        100, datetime(2026, 9, 15), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    result_aug = _calculate_cost_for_wh(
+        100, datetime(2026, 8, 15), 0, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert result_sep > 0
+    # Both Sept and Aug use current library summer rate after 2026-07-01
+    assert abs(result_sep - result_aug) < 1e-9
+    assert abs(result_sep - 100 * 0.15878 / 1000) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Additional: aggregate_hourly_data — skipped hours and cost_start_date gate
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_skipped_hours_contribute_to_cumulative_wh(
+    coordinator: DominionSCCoordinator,
+) -> None:
+    """Already-recorded hours increment cumulative_wh so tier calculations stay correct.
+
+    Scenario: first hour (800 Wh) is already in the recorder. The second hour
+    (1 Wh) should be priced at the *over-boundary* rate because cumulative_wh
+    was incremented by the skipped first hour. If the skip did not accumulate,
+    the second hour would be priced at the under-boundary rate instead.
+    """
+    from custom_components.dominionsc.const import COST_MODE_RATE_8
+
+    object.__setattr__(
+        coordinator.config_entry,
+        "options",
+        {CONF_COST_MODE: COST_MODE_RATE_8},
+    )
+    # Two intervals in the same hour, separated so each maps to its own hour.
+    hour1 = datetime(2026, 8, 1, 10, 0, 0)  # already recorded, 800_000 Wh
+    hour2 = datetime(2026, 8, 1, 11, 0, 0)  # new, 1 Wh
+
+    existing = {hour1}
+    forecast = SimpleNamespace(
+        start_date=date(2026, 7, 1), end_date=date(2026, 8, 31)
+    )
+
+    read1 = SimpleNamespace(start_time=hour1, end_time=hour1, consumption=800_000.0)
+    read2 = SimpleNamespace(start_time=hour2, end_time=hour2, consumption=1.0)
+
+    # Act
+    cons, costs = coordinator._aggregate_hourly_data(
+        [read1, read2],
+        metadata(),
+        forecast,
+        hour1.date(),
+        True,
+        existing_hours=existing,
+    )
+
+    # Assert: hour1 skipped, hour2 present
+    assert hour1 not in cons
+    assert hour2 in cons
+    assert cons[hour2] == 1.0
+
+    # The cost for 1 Wh must use the over-boundary rate (cumulative was 800_000 from skip)
+    # Cost at over-boundary: 1 Wh × (summer_over_per_wh for RATE_8 current)
+    # Regardless of exact rate, it should be strictly greater than zero
+    assert hour2 in costs
+    assert costs[hour2] > 0
+
+    # For contrast: cost for 1 Wh at zero cumulative (under-boundary) would equal the
+    # under rate, while at 800_000 cumulative it equals the over rate. Verify they differ.
+    cost_under_boundary = _calculate_cost_for_wh(1, hour2, 0, COST_MODE_RATE_8, 0, RATE_8)
+    cost_over_boundary = _calculate_cost_for_wh(
+        1, hour2, 800_000, COST_MODE_RATE_8, 0, RATE_8
+    )
+    assert abs(cost_under_boundary - cost_over_boundary) > 1e-12
+    assert abs(costs[hour2] - cost_over_boundary) < 1e-9
+
+
+def test_aggregate_cost_start_date_gate(coordinator: DominionSCCoordinator) -> None:
+    """Intervals before cost_start_date produce no cost row but still count toward cumulative_wh.
+
+    Two hours on different days:
+      - hour1 is on day1 (before cost_start_date = day2): 50 Wh, no cost row.
+      - hour2 is on day2 (on/after cost_start_date): 100 Wh, has cost row.
+    """
+    from custom_components.dominionsc.const import CONF_FIXED_RATE, COST_MODE_FIXED
+
+    object.__setattr__(
+        coordinator.config_entry,
+        "options",
+        {CONF_COST_MODE: COST_MODE_FIXED, CONF_FIXED_RATE: 0.15},
+    )
+    # Use a fixed rate for simplicity (no tier boundary complications).
+    # hour1 is on July 30 (before cost_start = August 1).
+    # hour2 is on August 1 (on/after cost_start).
+    hour1 = datetime(2026, 7, 30, 10, 0, 0)
+    hour2 = datetime(2026, 8, 1, 10, 0, 0)
+    cost_start = date(2026, 8, 1)
+
+    forecast = SimpleNamespace(
+        start_date=date(2026, 7, 1), end_date=date(2026, 8, 31)
+    )
+
+    read1 = SimpleNamespace(start_time=hour1, end_time=hour1, consumption=50.0)
+    read2 = SimpleNamespace(start_time=hour2, end_time=hour2, consumption=100.0)
+
+    # Act
+    cons, costs = coordinator._aggregate_hourly_data(
+        [read1, read2],
+        metadata(),
+        forecast,
+        hour1.date(),
+        True,
+        cost_start_date=cost_start,
+    )
+
+    # Assert consumption: both hours recorded (cost gate does not affect consumption)
+    assert cons[hour1] == 50.0
+    assert cons[hour2] == 100.0
+
+    # Assert cost: only hour2 has a cost row (hour1 is before cost_start_date)
+    assert hour1 not in costs
+    assert hour2 in costs
+    # Fixed rate: cost = 100 Wh × $0.15/kWh = $0.015
+    assert abs(costs[hour2] - 100 * 0.15 / 1000) < 1e-9

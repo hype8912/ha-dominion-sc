@@ -104,6 +104,7 @@ from .const import (
     CONF_EXTENDED_BACKFILL,
     CONF_EXTENDED_COST_BACKFILL,
     CONF_LOGIN_DATA,
+    CONF_SERVICE_ADDR,
     COST_MODE_NONE,
     DOMAIN,
     EXTENDED_BACKFILL_DAYS,
@@ -263,7 +264,15 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             _LOGGER.error("Error during login: %s", err)
             raise
 
-        accounts, service_addr_account_no = await self.api.async_get_accounts()
+        accounts, live_service_addr = await self.api.async_get_accounts()
+
+        # Use the service address locked in entry.data at initial setup for all
+        # statistic-ID construction. This prevents IDs from silently changing if
+        # the Dominion API returns a different address format on a later poll.
+        # Falls back to the live API value for installs that predate this field.
+        canonical_addr = (
+            self.config_entry.data.get(CONF_SERVICE_ADDR) or live_service_addr
+        )
 
         try:
             _LOGGER.debug("API: async_get_forecast")
@@ -280,7 +289,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         # Because DominionSC provides historical usage with a delay of a couple of days
         # we need to insert data into statistics.
         last_changed_per_account = await self._insert_statistics(
-            accounts, service_addr_account_no, forecast
+            accounts, canonical_addr, forecast
         )
 
         # Build account-specific data dictionary
@@ -297,7 +306,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         if "GAS" in accounts:
             gas_cost_mode, _ = _resolve_gas_cost_config(self.config_entry.options)
             if gas_cost_mode != COST_MODE_NONE:
-                _, gas_cost_id, _ = _build_statistic_ids(service_addr_account_no, "GAS")
+                _, gas_cost_id, _ = _build_statistic_ids(canonical_addr, "GAS")
                 last_gas_cost = await get_instance(self.hass).async_add_executor_job(
                     get_last_statistics, self.hass, 1, gas_cost_id, True, {"sum"}
                 )
@@ -308,7 +317,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         return DominionSCData(
             accounts=account_data,
             forecast=forecast,
-            service_addr_account_no=service_addr_account_no,
+            service_addr_account_no=live_service_addr,
             last_updated=dt_util.utcnow(),
             gas_cost_to_date=gas_cost_to_date,
         )
@@ -1343,13 +1352,16 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         window_end = _to_dt(end_date + timedelta(days=1))
 
         # ── 1. Resolve statistic IDs ──────────────────────────────────────────────
-        accounts, service_addr_account_no = await self.api.async_get_accounts()
+        accounts, live_service_addr = await self.api.async_get_accounts()
         if "ELECTRIC" not in accounts:
             _LOGGER.info("No ELECTRIC account found; nothing to recalculate.")
             return
 
+        canonical_addr = (
+            self.config_entry.data.get(CONF_SERVICE_ADDR) or live_service_addr
+        )
         consumption_id, cost_id, name_prefix = _build_statistic_ids(
-            service_addr_account_no, "ELECTRIC"
+            canonical_addr, "ELECTRIC"
         )
         assert cost_id is not None
 

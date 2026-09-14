@@ -72,6 +72,18 @@ def test_build_cost_mode_choices_uses_library_plan_name() -> None:
     assert "Rate 6" in choices[COST_MODE_RATE_6]
 
 
+def test_build_cost_mode_choices_exact_labels() -> None:
+    """Each label must match exactly — not just contain the rate number."""
+    choices = build_cost_mode_choices()
+    assert choices[COST_MODE_NONE] == "None (no cost calculation)"
+    assert choices[COST_MODE_RATE_8] == "Rate 8 - Residential Service"
+    assert choices[COST_MODE_RATE_6] == "Rate 6 - Energy Saver / Conservation Rate"
+    assert choices[COST_MODE_RATE_5] == "Rate 5 - Time of Use"
+    assert choices[COST_MODE_RATE_7] == "Rate 7 - Time-of-Use Demand (energy cost only)"
+    assert choices[COST_MODE_RATE_2] == "Rate 2 - Low Use Residential Service"
+    assert choices[COST_MODE_FIXED] == "Fixed Rate (custom $/kWh)"
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: Historical rate registry
 # ---------------------------------------------------------------------------
@@ -222,7 +234,10 @@ def test_build_gas_cost_mode_choices_uses_library_plan_names() -> None:
 
 
 def test_build_gas_cost_mode_choices_excludes_electric_modes() -> None:
+    """Gas choices must have EXACTLY 3 keys: none, rate_32s, rate_32v."""
     choices = build_gas_cost_mode_choices()
+    assert set(choices.keys()) == {COST_MODE_NONE, COST_MODE_RATE_32S, COST_MODE_RATE_32V}
+    # Explicitly confirm electric-only modes are absent
     assert COST_MODE_RATE_8 not in choices
     assert COST_MODE_RATE_5 not in choices
     assert COST_MODE_FIXED not in choices
@@ -251,3 +266,33 @@ def test_build_cost_mode_choices_fixed_rate_label() -> None:
 def test_build_gas_cost_mode_choices_has_three_options() -> None:
     choices = build_gas_cost_mode_choices()
     assert len(choices) == 3
+
+
+def test_build_gas_cost_mode_choices_exact_labels() -> None:
+    """Each gas label must match exactly."""
+    choices = build_gas_cost_mode_choices()
+    assert choices[COST_MODE_NONE] == "None (no cost calculation)"
+    assert choices[COST_MODE_RATE_32S] == "Rate 32S - Gas Standard Service"
+    assert choices[COST_MODE_RATE_32V] == "Rate 32V - Gas Value Service"
+
+
+def test_build_gas_cost_mode_choices_order() -> None:
+    """Gas choices must appear in order: none, rate_32s, rate_32v."""
+    choices = build_gas_cost_mode_choices()
+    keys = list(choices)
+    assert keys == [COST_MODE_NONE, COST_MODE_RATE_32S, COST_MODE_RATE_32V]
+
+
+def test_build_cost_mode_choices_full_ordering() -> None:
+    """Electric choices must appear in defined UI order: none, rate_8, rate_6, rate_5, rate_7, rate_2, fixed."""
+    choices = build_cost_mode_choices()
+    keys = list(choices)
+    assert keys == [
+        COST_MODE_NONE,
+        COST_MODE_RATE_8,
+        COST_MODE_RATE_6,
+        COST_MODE_RATE_5,
+        COST_MODE_RATE_7,
+        COST_MODE_RATE_2,
+        COST_MODE_FIXED,
+    ]

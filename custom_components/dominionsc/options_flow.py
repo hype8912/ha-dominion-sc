@@ -49,11 +49,14 @@ from .const import (
     DEFAULT_FIXED_RATE,
     DOMAIN,
 )
-from .rates import GAS_RATE_PLAN_REGISTRY, RATE_PLAN_REGISTRY, build_cost_mode_choices, build_gas_cost_mode_choices
+from .rates import RATE_PLAN_REGISTRY, build_cost_mode_choices, build_gas_cost_mode_choices
 
 CONF_RECALCULATE_HISTORY = "recalculate_history"
 CONF_RECALC_START_DATE = "recalc_start_date"
 CONF_RECALC_END_DATE = "recalc_end_date"
+
+# Built once at module level so _cost_mode_label doesn't rebuild on every call.
+_COST_MODE_LABELS: dict[str, str] = {}
 
 
 def _cost_mode_label(mode: str) -> str:
@@ -62,23 +65,19 @@ def _cost_mode_label(mode: str) -> str:
 
     Used to populate the ``description_placeholders`` in the
     ``recalculate_history`` form so the user can see which rate they are
-    switching from and to.
+    switching from and to.  Labels are taken from :func:`build_cost_mode_choices`
+    so the text always matches what the user saw in the dropdown.
 
     Args:
         mode: A ``COST_MODE_*`` string constant (e.g. ``"rate_8"``).
 
     Returns:
-        The rate schedule's full name for tiered modes (from the registry), or
-        a short label for ``"none"`` and ``"fixed"``. Falls back to the raw
-        mode string if it is not recognised.
+        The dropdown label for the mode, or the raw mode string as a fallback.
 
     """
-    if mode in RATE_PLAN_REGISTRY:
-        return RATE_PLAN_REGISTRY[mode].name
-    return {
-        COST_MODE_NONE: "None",
-        COST_MODE_FIXED: "Fixed Rate",
-    }.get(mode, mode)
+    if not _COST_MODE_LABELS:
+        _COST_MODE_LABELS.update(build_cost_mode_choices())
+    return _COST_MODE_LABELS.get(mode, mode)
 
 
 class DominionSCOptionsFlow(OptionsFlow):

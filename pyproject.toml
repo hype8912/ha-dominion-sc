@@ -1,6 +1,6 @@
 [project]
 name = "ha-dominion-sc"
-version = "0.0.7"
+version = "0.1.0"
 description = "Home Assistant integration for Dominion Energy SC "
 readme = "README.md"
 requires-python = ">=3.13.2"
@@ -11,7 +11,7 @@ authors = [
 keywords = ["home-assistant", "energy", "custom-integration"]
 dependencies = [
     "homeassistant>=2025.6.3",
-    "dominion-sc-power==0.0.1",
+    "dominion-sc-power==0.1.0",
     "winfcntl>=1.1.9",
 ]
 

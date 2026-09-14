@@ -62,6 +62,11 @@ COMMON_NAME = "Dominion Energy SC"
 # Set to ``None`` on the first login (before TFA has been completed).
 CONF_LOGIN_DATA = "login_data"
 
+# Service address / account number captured from the API at first setup and
+# locked in entry.data.  Used to build stable long-term statistic IDs.
+# Falls back to the live API value when absent (existing installs).
+CONF_SERVICE_ADDR: Final = "service_addr_account_no"
+
 # ---------------------------------------------------------------------------
 # Config-entry OPTIONS keys  (entry.options — user-configurable via options flow)
 # ---------------------------------------------------------------------------
@@ -98,11 +103,12 @@ COST_MODE_FIXED: Final = "fixed"
 
 # Dominion Energy SC Rate Schedule 8 — Residential Service.
 # Tiered (first 800 kWh vs. over 800 kWh) with seasonal summer/winter rates.
-# See rates.SC_RATE_8 for the exact values.
+# Rate values are sourced from the dominion-sc-power library (RATE_8 plan).
 COST_MODE_RATE_8: Final = "rate_8"
 
 # Dominion Energy SC Rate Schedule 6 — Energy Saver / Conservation Rate.
-# Tiered with seasonal summer/winter rates. See rates.SC_RATE_6 for details.
+# Tiered with seasonal summer/winter rates.
+# Rate values are sourced from the dominion-sc-power library (RATE_6 plan).
 COST_MODE_RATE_6: Final = "rate_6"
 
 # Dominion Energy SC Rate Schedule 2 — Low Use Residential Service.

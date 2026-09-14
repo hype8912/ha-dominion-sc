@@ -19,9 +19,9 @@
         },
         "data_description": {
           "extended_backfill": "Load historical electric and gas consumption data for the last 365 days",
-          "extended_cost_backfill": "Calculate estimated cost of electric data for the last 365 days or the effective date of the chosen rate schedule, whichever is later. Accuracy may vary."
+          "extended_cost_backfill": "Calculate estimated cost for the backfilled data. Only useful if you select a rate schedule on the next screen. Accuracy may vary for older data."
         },
-        "description": "By default, energy data is backfilled from the start of your current billing cycle. You can optionally load 365 days of historical data.\n\nNOTE: You will not be able to change your decision to do an extended backfill later unless you delete and re-add the integration",
+        "description": "By default, energy data is backfilled from the start of your current billing cycle. You can optionally load 365 days of historical data.\n\n**Note:** This decision cannot be changed later without deleting and re-adding the integration.",
         "title": "Historical Data"
       },
       "cost_mode": {
@@ -29,9 +29,9 @@
           "cost_mode": "Cost calculation method"
         },
         "data_description": {
-          "cost_mode": "How to calculate energy costs"
+          "cost_mode": "Your rate schedule number is printed on your Dominion Energy bill"
         },
-        "description": "Select how energy costs are calculated.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.",
+        "description": "Select how energy costs are calculated. Your rate schedule number is printed on your Dominion Energy bill. If unsure, Rate 8 is the most common residential rate.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.",
         "title": "Cost Calculation Settings"
       },
       "cost_mode_fixed_rate": {
@@ -39,9 +39,9 @@
           "fixed_rate": "Fixed rate ($/kWh)"
         },
         "data_description": {
-          "fixed_rate": "Single rate applied to all kWh consumed"
+          "fixed_rate": "Single rate applied to all kWh consumed (find this on your Dominion bill)"
         },
-        "description": "Enter the fixed rate applied to all usage.",
+        "description": "Enter the flat rate per kWh that will be applied to all usage. You can find this value on your Dominion Energy bill under the energy charge line item.",
         "title": "Fixed Rate Settings"
       },
       "gas_cost_mode": {
@@ -91,9 +91,10 @@
           "username": "Username"
         },
         "data_description": {
-          "password": "The password for your utility account",
-          "username": "The username for your utility account"
+          "password": "The password you use to log in at dominionenergy.com",
+          "username": "The email address or username you use to log in at dominionenergy.com"
         },
+        "description": "Enter your Dominion Energy SC online account credentials. If your account has two-factor authentication enabled, you will be prompted to complete it in the next step.",
         "title": "Enter credentials"
       }
     }
@@ -139,19 +140,21 @@
           "fixed_rate": "Fixed rate ($/kWh)"
         },
         "data_description": {
-          "fixed_rate": "Single rate applied to all kWh consumed"
+          "fixed_rate": "Single rate applied to all kWh consumed (find this on your Dominion bill)"
         },
-        "description": "Enter the fixed rate applied to all usage.",
+        "description": "Enter the flat rate per kWh that will be applied to all usage. You can find this value on your Dominion Energy bill under the energy charge line item.",
         "title": "Fixed Rate Settings"
       },
       "init": {
         "data": {
-          "cost_mode": "Cost calculation method"
+          "cost_mode": "Cost calculation method",
+          "gas_cost_mode": "Gas Rate Plan"
         },
         "data_description": {
-          "cost_mode": "How to calculate energy costs"
+          "cost_mode": "Your rate schedule number is printed on your Dominion Energy bill",
+          "gas_cost_mode": "Rate schedule used to calculate gas costs"
         },
-        "description": "Select how energy costs are calculated.\n\n**Note:** Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics.",
+        "description": "Select how energy costs are calculated.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.\n\n**Note:** Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics.",
         "title": "Cost Calculation Settings"
       },
       "recalculate_date_range": {

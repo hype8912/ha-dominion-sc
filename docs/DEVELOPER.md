@@ -52,14 +52,14 @@ ha-dominion-sc/
 │   ├── sensor.py                   # HA sensor entities
 │   ├── const.py                    # Constants and helpers
 │   ├── models.py                   # Pure dataclasses (no HA dependency)
-│   ├── rates.py                    # Rate schedule definitions + calculations
+│   ├── rates.py                    # Rate plan adapter (COST_MODE_* → library RatePlan)
 │   ├── cost.py                     # Per-interval cost calculation
 │   ├── billing.py                  # Billing-cycle boundary estimation
 │   ├── aggregation.py              # Hourly interval aggregation
 │   ├── statistics_ids.py           # Statistic ID construction
 │   ├── strings.json                # UI translatable strings
 │   └── translations/en.json        # English translations
-├── tests/                          # Test suite (163 tests, 100% coverage)
+├── tests/                          # Test suite (235 tests, 100% coverage)
 │   ├── conftest.py                 # pytest fixtures
 │   ├── test_config_flow.py
 │   ├── test_coordinator_*.py       # Coordinator tests (multiple files)
@@ -141,7 +141,7 @@ _process_and_insert_statistics()
 | Module | Has HA dependency? | Purpose |
 |---|---|---|
 | `models.py` | No | Data containers |
-| `rates.py` | No | Rate schedule definitions and math |
+| `rates.py` | No | Rate plan adapter (COST_MODE_* → library RatePlan) |
 | `cost.py` | No | Per-interval cost calculation |
 | `billing.py` | No | Billing-cycle boundary estimation |
 | `aggregation.py` | No | Hourly interval bucketing |
@@ -174,11 +174,13 @@ The central orchestrator. Key methods:
 | `_process_and_insert_statistics()` | Both paths above | Fetches, aggregates, writes |
 | `async_recalculate_historic_costs()` | From options flow | Re-prices historical data |
 
-### `rates.py` — Rate schedule definitions
+### `rates.py` — Rate schedule adapter
 
-Defines Dominion's tiered SC rate schedules. When Dominion updates their
-rates, add a new `RateSchedule` constant here and register it in
-`TIERED_RATE_REGISTRY`.
+Thin adapter between the integration's `COST_MODE_*` string keys and the
+`dominion-sc-power` library's `RatePlan` objects. Rate definitions live in
+the library; this module provides `RATE_PLAN_REGISTRY` (electric),
+`GAS_RATE_PLAN_REGISTRY` (gas), and the UI choice builders
+`build_cost_mode_choices()` / `build_gas_cost_mode_choices()`.
 
 ### `billing.py` — Billing cycle estimation
 
@@ -225,7 +227,7 @@ Dominion's Rate 8 and Rate 6 are two-tier rates:
 
 The integration tracks cumulative Wh consumed within each billing cycle.
 When the cumulative counter crosses 800 kWh, the cost for that interval is
-split: part at `rate_under`, part at `rate_over`. See `rates.calculate_tiered_cost()`.
+split: part at `rate_under`, part at `rate_over`. See `cost._calculate_tiered_cost()`.
 
 The cumulative counter **resets to 0** at each billing-cycle boundary. The
 boundaries are estimated by `billing._estimate_billing_cycles()`.
@@ -272,16 +274,20 @@ because it is far more common for zeros to indicate missing data.
 
 ## 6. How to Add a New Feature
 
-### Add a new tiered rate schedule
+### Add a new rate schedule
 
-1. In `rates.py`: add a new `RateSchedule` constant (copy `SC_RATE_8` as a
-   template, update all values).
-2. In `const.py`: add a new `COST_MODE_*` constant string.
-3. In `rates.py` (`TIERED_RATE_REGISTRY`): add `COST_MODE_*: YOUR_RATE`.
-4. Run the tests — `build_cost_mode_choices()` and `_resolve_cost_config()`
-   will pick up the new entry automatically.
+Rate definitions live in the `dominion-sc-power` library, not in the
+integration. To expose a new rate in the UI:
 
-No other files need to change.
+1. In `const.py`: add a new `COST_MODE_*` constant whose value matches
+   the library `RatePlan.code` (e.g. `COST_MODE_RATE_9 = "rate_9"`).
+2. In `rates.py` (`RATE_PLAN_REGISTRY` for electric, `GAS_RATE_PLAN_REGISTRY`
+   for gas): add the new constant to the generator tuple.
+3. In `rates.py` (`build_cost_mode_choices()` or `build_gas_cost_mode_choices()`):
+   add a display string for the new mode.
+
+`_resolve_cost_config()` and `_resolve_gas_cost_config()` will pick up the
+new entry automatically. No other files need to change.
 
 ### Add a new sensor
 
@@ -290,6 +296,22 @@ No other files need to change.
    forecast data).
 2. Add the translation key to `strings.json` and `translations/en.json`.
 3. Add a test in `test_sensor.py`.
+
+`DominionSCEntityDescription` fields:
+- `value_fn`: required. Callable that receives `DominionSCAccountData` (for
+  account sensors) or `DominionSCData` (for billing sensors) and returns the
+  sensor's state value. Return `None` to mark the sensor unavailable.
+- `last_reset_fn`: optional. Only set this for `SensorStateClass.TOTAL` sensors
+  whose value resets mid-stream (e.g. a billing-cycle running total). Callable
+  that receives the full `DominionSCData` and returns a UTC-aware `datetime`
+  of the last reset. HA uses this to avoid misclassifying the drop as a negative
+  delta. Leave `None` (the default) for all other sensors.
+
+**State class guidance:**
+- Use `TOTAL` for running sums that reset on a known event (e.g. `cost_to_date`
+  resets at billing cycle start). Always pair with `last_reset_fn`.
+- Use `MEASUREMENT` for point-in-time values such as forecasts or averages
+  (e.g. `forecasted_cost`, `typical_cost`). Do not use `TOTAL` for these.
 
 ### Add a new config/options field
 
@@ -313,10 +335,10 @@ uv sync
 uv run pytest --cov=custom_components/dominionsc --cov-report=term-missing
 
 # Run a specific test file
-uv run pytest tests/test_coordinator_complete.py -v
+uv run pytest tests/test_coordinator.py -v
 
 # Run a specific test
-uv run pytest tests/test_rates.py::test_calculate_tiered_cost_straddles -v
+uv run pytest tests/test_coordinator.py::test_cost_tiered_straddles_boundary -v
 ```
 
 ### Test structure
@@ -339,13 +361,13 @@ tests for every branch.
 
 | File | What it covers |
 |---|---|
-| `test_config_flow.py` | All config flow steps, TFA, reauth |
-| `test_coordinator_complete.py` | Comprehensive coordinator scenarios |
+| `test_config_flow.py` | All config flow steps, TFA, reauth, gas cost mode |
+| `test_coordinator.py` | Comprehensive coordinator scenarios, cost calculation, statistics pipeline |
 | `test_phase5_register_aware.py` | Register discovery, multi-register routing |
-| `test_sensor.py` | Sensor entity value extraction |
-| `test_rates.py` | Tiered rate math, season detection |
+| `test_sensor.py` | Sensor entity value extraction, gas cost sensor |
+| `test_rates.py` | Rate plan registry, cost mode choices |
 | `test_const.py` | `clean_service_addr` output |
-| `test_init.py` | `async_setup_entry`, `async_unload_entry` |
+| `test_init.py` | `async_setup_entry`, `async_unload_entry`, schema version notification |
 
 ---
 
@@ -414,6 +436,20 @@ key format without understanding the race condition it prevents.
 
 Stored in `entry.data`. Changing this key (or removing it) logs out all
 existing users on the next HA restart.
+
+### `CONF_LAST_RATE_SCHEMA_VERSION` key and `CURRENT_RATE_SCHEMA_VERSION`
+
+`CONF_LAST_RATE_SCHEMA_VERSION` is stored in `entry.data` and tracks which
+tariff values the user's statistics were last computed against. Increment
+`CURRENT_RATE_SCHEMA_VERSION` only when tariff rates change (not when new
+rates are added). Do not rename the key — renaming it would suppress the
+migration notification for existing users who need to recalculate.
+
+### `COST_MODE_RATE_8 = "rate_8"` and `COST_MODE_RATE_6 = "rate_6"`
+
+These string values are stored in `entry.options` for every existing user.
+Changing them would silently clear all users' cost mode selection on the
+next HA restart.
 
 ---
 

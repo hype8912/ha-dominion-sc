@@ -1426,7 +1426,7 @@ wheels = [
 
 [[package]]
 name = "dominion-sc-power"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "../dominion-sc-power" }
 dependencies = [
     { name = "aiohttp", version = "3.13.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14.2'" },
@@ -1747,7 +1747,7 @@ wheels = [
 
 [[package]]
 name = "ha-dominion-sc"
-version = "0.0.7"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "dominion-sc-power" },

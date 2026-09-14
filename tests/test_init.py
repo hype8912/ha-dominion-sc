@@ -96,6 +96,10 @@ async def test_setup_entry_fires_notification_when_version_absent(
         await async_setup_entry(hass, entry)
 
     mock_notify.assert_called_once()
+    # Verify the notification message contains meaningful text
+    call_kwargs = mock_notify.call_args
+    notification_message = call_kwargs[0][1] if call_kwargs[0] else call_kwargs[1].get("message", "")
+    assert "rate" in notification_message.lower() or "Dominion" in notification_message
     # After setup, version should be updated in entry.data
     assert entry.data.get(CONF_LAST_RATE_SCHEMA_VERSION) == CURRENT_RATE_SCHEMA_VERSION
 
@@ -125,6 +129,10 @@ async def test_setup_entry_fires_notification_when_version_behind(
         await async_setup_entry(hass, entry)
 
     mock_notify.assert_called_once()
+    # Verify the notification message is meaningful (mentions rates/recalculate)
+    call_kwargs = mock_notify.call_args
+    notification_message = call_kwargs[0][1] if call_kwargs[0] else call_kwargs[1].get("message", "")
+    assert "Recalculate" in notification_message or "recalculate" in notification_message.lower()
     assert entry.data.get(CONF_LAST_RATE_SCHEMA_VERSION) == CURRENT_RATE_SCHEMA_VERSION
 
 

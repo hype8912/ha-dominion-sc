@@ -12,176 +12,284 @@ A Home Assistant custom integration for Dominion Energy South Carolina customers
 - **Billing Information**: Monitor current billing cycle costs and forecasts
 - **Energy Dashboard Compatibility**: Seamlessly integrate with Home Assistant's Energy Dashboard
 - **Automatic Updates**: Data refreshes every 12 hours
-- **Cost Estimation Options**: 
-  - Fixed rate pricing
-  - South Carolina Rate Schedule 8 (General Service)
-  - South Carolina Rate Schedule 6 (Energy Saver/Conservation)
+- **Cost Estimation Options**:
+  - South Carolina Rate Schedule 8 (Residential Service — tiered)
+  - South Carolina Rate Schedule 6 (Energy Saver/Conservation — tiered)
+  - South Carolina Rate Schedule 5 (Time of Use)
+  - South Carolina Rate Schedule 7 (Time-of-Use Demand — energy portion only)
+  - South Carolina Rate Schedule 2 (Low Use Residential Service — flat rate)
+  - South Carolina Rate Schedule 32S and 32V (Gas Standard / Gas Value)
+  - Fixed rate pricing (custom $/kWh)
 - **Multiple Energy Sources**: Support for both electric and gas services at the same service address
+
+---
+
+## Prerequisites
+
+Before installing, verify the following:
+
+### 1. Home Assistant version
+
+This integration requires **Home Assistant 2025.6.3 or newer**. Check your version at **Settings** → **About**.
+
+### 2. Two-factor authentication (TFA)
+
+TFA is **supported but not required**. If your Dominion account has TFA enabled, the integration will prompt you to complete it during setup. If your account does not have TFA, setup proceeds directly after entering your credentials.
+
+If you do have TFA enabled: **Recommended**: Use SMS (text message) verification — it is the most reliable method with this integration.
+
+### 3. Know your rate schedule
+
+During setup you will be asked which rate schedule your account uses. To find yours:
+- Check your most recent Dominion Energy bill — the rate schedule is printed in the rate/tariff section
+- Log in to [dominionenergy.com](https://www.dominionenergy.com) → **My Account** → **My Bill** → look for "Rate Schedule"
+- Call Dominion Energy SC customer service if you are unsure
+
+If you don't know your rate, selecting **Rate 8** (Residential Service) is the most common choice for standard residential customers.
+
+---
 
 ## Installation
 
 ### HACS (Recommended)
 
+[HACS](https://hacs.xyz/) must be installed in your Home Assistant instance before proceeding.
+
 1. Open HACS in your Home Assistant instance
-2. Click on the three dots in the top right corner
-3. Select "Custom repositories"
-4. Add `https://github.com/sctigercat1/ha-dominion-sc` as an integration repository
-5. Click "Explore & Download Repositories"
-6. Search for "Dominion Energy SC"
-7. Click "Download"
+2. Click the three dots (⋮) in the top-right corner
+3. Select **Custom repositories**
+4. In the **Repository** field enter: `https://github.com/sctigercat1/ha-dominion-sc`
+5. Set **Category** to **Integration**
+6. Click **Add**
+7. Search for "Dominion Energy SC" in HACS and click **Download**
 8. Restart Home Assistant
 
 ### Manual Installation
 
 1. Download the latest release from the [releases page](https://github.com/sctigercat1/ha-dominion-sc/releases)
-2. Extract the `custom_components/dominionsc` folder to your Home Assistant `custom_components` directory
+2. Extract the archive and copy the `custom_components/dominionsc` folder into your Home Assistant `config/custom_components/` directory:
+   ```
+   config/
+   └── custom_components/
+       └── dominionsc/       ← place folder here
+           ├── __init__.py
+           ├── manifest.json
+           └── ...
+   ```
 3. Restart Home Assistant
+
+---
 
 ## Configuration
 
-### Initial Setup & Installation Parameters
+### Initial Setup
 
 1. Go to **Settings** → **Devices & Services**
 2. Click **Add Integration**
-3. Search for "Dominion Energy SC"
-4. Enter your Dominion Energy SC account credentials:
-   - **Username**: Your Dominion Energy SC online account username
-   - **Password**: Your Dominion Energy SC online account password
-5. Complete two-factor authentication when prompted
-   - **Recommended**: Use SMS-based verification for better reliability
-6. Select your historical data backfill preferences:
-   - **Backfill extra consumption data**: Load up to 365 days of historical electric and gas consumption data (default: off, backfills only the current billing cycle)
-   - **Backfill extra cost data**: Calculate estimated electric cost for the extended range, limited to the effective date of the chosen rate schedule (default: off; requires consumption backfill to be enabled)
-7. Select your cost tracking preferences:
-   - **None**: No cost calculation
-   - **Rate Schedule 8**: General Residential Service rate
-   - **Rate Schedule 6**: Energy Saver/Conservation rate
-   - **Fixed Rate**: Enter a custom $/kWh rate (default: $0.14164/kWh)
-8. Click **Submit**
+3. Search for **Dominion Energy SC** and select it
+4. Enter your Dominion Energy SC online account credentials:
+   - **Username**: The email address or username you use to log in at dominionenergy.com
+   - **Password**: Your dominionenergy.com account password
+5. Complete two-factor authentication when prompted:
+   - If your account has multiple TFA methods, you will be asked to choose one
+   - Enter the code sent to you
+6. Choose your **historical data backfill** preferences:
+   - **Backfill extra consumption data** (default: off): Loads up to 365 days of historical electric and gas consumption. Off by default — only the current billing cycle is loaded.
+   - **Backfill extra cost data** (default: off): Calculates estimated electric cost for the extended range. Requires consumption backfill to also be enabled. Cost accuracy decreases for older data because billing-cycle boundaries must be estimated.
+   - > **Note**: You cannot enable extended backfill later without removing and re-adding the integration.
+7. Choose your **electric cost tracking** preference:
+   | Option | Description |
+   |--------|-------------|
+   | None | No cost calculation |
+   | Rate 8 | Residential Service (tiered, most common) |
+   | Rate 6 | Energy Saver/Conservation (tiered) |
+   | Rate 5 | Time of Use (TOU) |
+   | Rate 7 | Time-of-Use Demand (TOU energy portion only; demand charge not tracked) |
+   | Rate 2 | Low Use Residential Service (flat rate; requires ≤ 400 kWh/month — verify eligibility with Dominion) |
+   | Fixed Rate | Enter a custom $/kWh rate |
+8. If a **gas account** is detected on your service address, you will also be asked to choose a gas cost tracking preference:
+   | Option | Description |
+   |--------|-------------|
+   | None | No gas cost calculation |
+   | Rate 32S | Gas Standard Service |
+   | Rate 32V | Gas Value Service |
+9. Click **Submit**
 
-### Configuration Parameters
+### What to expect after setup
+
+- **First data may take up to 24–48 hours to appear.** Dominion Energy SC reports interval data with a delay of 1–2 days. The integration will poll within minutes, but if Dominion has not yet published recent data, the Energy Dashboard will show no consumption until the next poll cycle (every 12 hours) when data becomes available.
+- **The integration creates a device** named after your service address under **Settings** → **Devices & Services** → **Dominion Energy SC**.
+- If you enabled extended backfill, the initial load of 365 days of data runs in the background and may take a few minutes to complete.
+
+### Changing Cost Settings After Setup
+
+Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → **Configure**. When switching between rate schedules, you will be offered the option to recalculate historical cost statistics over a date range you choose using the new rate.
+
+### Configuration Parameters Reference
 
 | Parameter | Description | Required | Default |
 |-----------|-------------|----------|---------|
-| Username | Dominion Energy SC account username | Yes | - |
-| Password | Dominion Energy SC account password | Yes | - |
-| Extended Backfill | Load up to 365 days of consumption data | No | Off |
+| Username | dominionenergy.com login email/username | Yes | — |
+| Password | dominionenergy.com account password | Yes | — |
+| Extended Backfill | Load up to 365 days of historical consumption | No | Off |
 | Extended Cost Backfill | Calculate cost for the extended range | No | Off |
-| Cost Mode | Cost calculation method | No | Rate 8 |
-| Fixed Rate | Custom rate in $/kWh (only when Cost Mode is Fixed) | No | 0.14164 |
+| Cost Mode | Electric cost calculation rate schedule | No | Rate 8 |
+| Fixed Rate | Custom rate in $/kWh (only when Cost Mode = Fixed) | No | 0.14164 |
+| Gas Cost Mode | Gas cost calculation rate schedule | No | None |
 
-### Changing Cost Settings
-
-After initial setup, the cost calculation method can be changed at any time through **Settings** → **Devices & Services** → **Dominion Energy SC** → **Configure**. When changing cost modes, you will be given the option to recalculate historic cost records using the new method over a date range you specify, up to the effective date of your rate schedule.
-
-## Removal
-
-This integration follows standard integration removal. No extra steps are required.
+---
 
 ## Sensors
 
-The integration creates the following sensors:
+All sensors are diagnostic entities and appear under the device created for your service address.
 
-### Energy Source Sensors (per energy source, e.g. Electric)
+### Per-account sensors (one per energy source: Electric, Gas)
 
-- **{Account} Latest Data** (e.g. "Electric Latest Data"): Timestamp of the most recent energy data interval received from Dominion Energy SC
+| Sensor | Description |
+|--------|-------------|
+| **{Account} Latest Data** | Timestamp of the most recent interval inserted into statistics (e.g. "Electric Latest Data"). Useful for checking data freshness. |
 
-### Billing Sensors (per service address)
+### Billing sensors (one set per service address)
 
-- **Last Polling**: Timestamp of when the Dominion Energy SC website was last polled for energy source data changes
-- **Cost to Date**: Current billing cycle cost in USD
-- **Forecasted Cost**: Projected end-of-cycle cost in USD
-- **Typical Cost**: Historical average cost for comparison in USD
-- **Start Date**: Billing cycle start date
-- **End Date**: Billing cycle end date
+These sensors are only created when Dominion's billing forecast is available for your account.
 
-All monetary sensors display in USD with 2 decimal precision.
+| Sensor | Description | Unit |
+|--------|-------------|------|
+| **Current bill cost to date** | Dominion's reported spend in the current billing cycle | USD |
+| **Current bill forecasted cost** | Projected end-of-cycle spend | USD |
+| **Typical monthly cost** | Historical average for comparison | USD |
+| **Current bill start date** | Billing cycle start (hidden by default) | date |
+| **Current bill end date** | Billing cycle end (hidden by default) | date |
+| **Last Polling** | UTC timestamp of the most recent coordinator poll | timestamp |
 
-## Example Usage
+### Gas cost sensor
 
-### Viewing Your Data
+| Sensor | Description | Unit |
+|--------|-------------|------|
+| **Gas accumulated cost** | Running total of gas cost from long-term statistics (only created when Rate 32S or 32V is selected) | USD |
 
-Energy data can be viewed in two locations:
-- **Energy Dashboard**: For electric consumption, electric cost, and gas consumption
-- **Sensors**: As described in the Sensors section above
+---
 
-### Energy Dashboard Integration
+## Energy Dashboard Setup
 
-The integration provides three statistics for the Energy Dashboard:
+The integration writes long-term statistics directly to the HA recorder. These appear in the **Energy Dashboard** under **Settings** → **Dashboards** → **Energy**.
 
-| Statistic | Description | Unit |
-|-----------|-------------|------|
-| `dominionsc:<your_service_address>_electric_energy_consumption` | Hourly electric consumption | Wh |
-| `dominionsc:<your_service_address>_electric_energy_cost` | Hourly electric cost | USD |
-| `dominionsc:<your_service_address>_gas_energy_consumption` | Hourly gas consumption | ft³ |
+### Statistic IDs
 
-**To add statistics to the Energy Dashboard:**
+Statistics are named using your service address. The format is:
+
+```
+dominionsc:<service_address>_electric_energy_consumption
+dominionsc:<service_address>_electric_energy_cost
+dominionsc:<service_address>_gas_energy_consumption
+dominionsc:<service_address>_gas_energy_cost
+```
+
+where `<service_address>` is your service address/account number with spaces and special characters replaced by underscores and lowercased. For example, service address `"12345 Main St"` becomes `12345_main_st`.
+
+To find the exact ID in use: go to **Developer Tools** → **Statistics** and search for `dominionsc`.
+
+### Adding statistics to the Energy Dashboard
 
 1. Go to **Settings** → **Dashboards** → **Energy**
 2. Under **Electricity grid**, click **Add consumption**
-3. Search for your service address or "electric"
-4. Select the appropriate consumption statistic as described in the table above
-5. For cost tracking (optional), select **Use an entity tracking the total costs**
-6. Select the appropriate cost statistic
-7. For gas consumption (if applicable), navigate to **Gas consumption** and repeat the process with the gas consumption statistic
+3. Search for `dominionsc` or your service address
+4. Select the `..._electric_energy_consumption` statistic
+5. For cost tracking, select **Use an entity tracking the total costs** and choose `..._electric_energy_cost`
+6. For gas (if applicable), scroll to **Gas consumption**, click **Add gas source**, and select `..._gas_energy_consumption`
+7. For gas cost tracking, select **Use an entity tracking the total costs** and choose `..._gas_energy_cost`
 
-### Creating Automations
+| Statistic | Description | Unit |
+|-----------|-------------|------|
+| `dominionsc:<addr>_electric_energy_consumption` | Hourly electric consumption | Wh |
+| `dominionsc:<addr>_electric_energy_cost` | Hourly electric cost (when a rate is selected) | USD |
+| `dominionsc:<addr>_gas_energy_consumption` | Hourly gas consumption | ft³ |
+| `dominionsc:<addr>_gas_energy_cost` | Hourly gas cost (when Rate 32S or 32V is selected) | USD |
 
-Example automation to notify when forecasted costs exceed a threshold:
+---
+
+## Example Automations
+
+### Alert when forecasted bill exceeds a threshold
 
 ```yaml
 automation:
   - alias: "High Energy Cost Alert"
     trigger:
       - platform: numeric_state
-        entity_id: sensor.<your_service_address>_current_bill_forecasted_cost
+        entity_id: sensor.dominion_energy_sc_current_bill_forecasted_cost
         above: 150
     action:
       - service: notify.mobile_app
         data:
-          message: "Your forecasted energy cost is ${{ states('sensor.<your_service_address>_current_bill_forecasted_cost') }}"
+          message: "Your forecasted energy bill is ${{ states('sensor.dominion_energy_sc_current_bill_forecasted_cost') }}"
 ```
+
+---
 
 ## Troubleshooting
 
-### Authentication Issues
+### No data in the Energy Dashboard after setup
 
-If you receive authentication errors:
+This is normal on first install. Dominion reports data with a 24–48 hour delay.
+
+1. Wait at least 24 hours after setup, then manually trigger a refresh: **Settings** → **Devices & Services** → **Dominion Energy SC** → click the three dots → **Reload**
+2. Check that the **{Account} Latest Data** sensor has a timestamp. If it reads "unavailable", Dominion has not yet published data for the current period.
+3. Check Home Assistant logs (**Settings** → **System** → **Logs**) and search for `dominionsc` — the coordinator logs how many statistics rows it inserted on each poll.
+
+### Authentication errors
+
 1. Verify your credentials at [dominionenergy.com](https://www.dominionenergy.com)
-2. If you recently changed your password, remove and re-add the integration
-3. Ensure two-factor authentication is properly configured
-   - **Recommended**: Use SMS-based verification for better reliability
-4. Check the Home Assistant logs for specific error messages
+2. Confirm TFA is enabled and working on your Dominion account (see [Prerequisites](#prerequisites))
+3. If you recently changed your password, remove and re-add the integration
+4. If you see a re-authentication prompt in HA, click it and re-enter your credentials — TFA session tokens expire periodically
 
-### Data Not Updating
+### "Integration already configured" error
 
-- The integration polls every 12 hours by default
-- Manual refresh: Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → Click the three dots → **Reload**
-- Check your internet connection
-- Verify Dominion Energy SC's website is accessible
+Each Dominion Energy SC account can only be added once. If you need to reconfigure, go to **Settings** → **Devices & Services** → **Dominion Energy SC** → click the three dots → **Delete**, then re-add.
+
+### Cost statistics show $0 for historical data
+
+Rate schedules have an effective date (currently 2026-07-01 for all SC rates). Cost will show $0.00 for any intervals before that date if you chose extended backfill. This is expected — the integration only calculates costs from the date your chosen rate became effective.
+
+### Energy Dashboard shows gaps or missing history
+
+If you see a gap that starts on a specific date, your account's data was not available from the Dominion API for that period. The integration will automatically fill in late-arriving data on the next poll cycle (every 12 hours).
+
+---
 
 ## Known Limitations
 
-- **Data Delay**: Energy usage data is reported by Dominion Energy SC with a 24-48 hour delay. Real-time monitoring is not available. The API is polled every 12 hours for new energy data
-- **Single Service Address**: Currently supports only one service address per Dominion Energy SC account. Support for multiple service addresses may be included in a future release
-- **No Solar/Grid Export**: Energy provided back to the grid from sources like solar panels is not yet supported
-- **Cost Estimates**: Calculations are estimates based on selected rate schedule; actual bills may vary (in particular, optional historic cost calculation will likely be less accurate due to need of estimating prior billing cycles)
-- **Fixed Charges Not Included**: Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics. Only energy usage charges are calculated
-- **Rate 7 Demand Charge**: For Rate 7 (Time-of-Use Demand), only the time-of-use energy portion is tracked. The monthly demand charge cannot be determined from interval data
-- **TFA Required**: The account must have TFA activated; flows are not supported for accounts without TFA
+- **Data Delay**: Energy usage data is reported by Dominion Energy SC with a 24–48 hour delay. Real-time monitoring is not available.
+- **Single Service Address**: Only one service address per Dominion Energy SC account is supported. Multiple service addresses may be added in a future release.
+- **No Solar/Grid Export**: Energy returned to the grid from solar panels is not yet supported.
+- **Cost Estimates**: Calculations are estimates based on the selected rate schedule. Actual bills may differ, particularly for historical data where billing-cycle boundaries must be estimated.
+- **Fixed Charges Not Included**: Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics. Only energy usage charges are calculated.
+- **Rate 7 Demand Charge**: For Rate 7 (Time-of-Use Demand), only the time-of-use energy portion is tracked. The monthly on-peak billing demand charge cannot be determined from interval data.
+- **TFA**: If your Dominion account has two-factor authentication enabled, you will be prompted to complete it during setup and periodically when the session token expires.
 
 ### Supported Rate Schedules
 
-| Rate | Description | Type |
-|------|-------------|------|
-| Rate 2 | Limited Energy Service | Tiered |
-| Rate 5 | Time of Use | Time-of-Use |
-| Rate 6 | Energy Saver/Conservation | Tiered |
-| Rate 7 | Time-of-Use Demand | Time-of-Use (energy portion only; demand charge not tracked) |
-| Rate 8 | General Residential Service | Tiered |
-| Rate 32S | Gas Standard | Gas flat rate |
-| Rate 32V | Gas Value | Gas flat rate |
-| Fixed Rate | Custom $/kWh | Flat |
+| Rate | Description | Type | Effective Date |
+|------|-------------|------|----------------|
+| Rate 2 | Low Use Residential Service | Flat electric | 2026-07-01 |
+| Rate 5 | Time of Use | TOU electric | 2026-07-01 |
+| Rate 6 | Energy Saver/Conservation | Tiered electric | 2026-07-01 |
+| Rate 7 | Time-of-Use Demand | TOU electric (energy only; demand charge not tracked) | 2026-07-01 |
+| Rate 8 | Residential Service | Tiered electric | 2026-07-01 |
+| Rate 32S | Gas Standard Service | Flat gas | 2026-07-01 |
+| Rate 32V | Gas Value Service | Flat gas | 2026-07-01 |
+| Fixed Rate | Custom $/kWh | Flat electric | n/a |
+
+---
+
+## Removal
+
+Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → click the three dots → **Delete**.
+
+Removing the integration does not delete the long-term statistics already stored in the HA recorder. Your Energy Dashboard history is preserved. If you re-add the integration, it will resume writing to the same statistic IDs.
+
+---
 
 ## Support
 
@@ -193,30 +301,30 @@ If you receive authentication errors:
 Contributions are welcome! Please submit a pull request with your proposed changes.
 
 ### Development Environment Setup
+
 ```bash
 git clone https://github.com/sctigercat1/ha-dominion-sc.git
 cd ha-dominion-sc
-./scripts/setup
+
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+uv sync
+uv run pytest
+uv run ruff check custom_components/ tests/
 ```
 
-### Code Validation
-
-After each change, please run the following scripts to format/check your code with `ruff` and run unit tests.
-
-```bash
-./scripts/lint
-./scripts/test
-```
+See [docs/DEVELOPER.md](docs/DEVELOPER.md) for full developer documentation.
 
 ## Credits
 
 This project was inspired by [Opower](https://www.home-assistant.io/integrations/opower/), [ha-dominion-energy](https://github.com/YeomansIII/ha-dominion-energy), [ha-unraid](https://github.com/ruaan-deysel/ha-unraid), and [integration_blueprint](https://github.com/ludeeus/integration_blueprint). Much appreciated!
 
-Special thanks also to the Home Assistant and HACS communities.
+Special thanks to the Home Assistant and HACS communities.
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
 
 ## Disclaimer
 

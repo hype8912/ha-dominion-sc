@@ -59,10 +59,12 @@ ha-dominion-sc/
 │   ├── statistics_ids.py           # Statistic ID construction
 │   ├── strings.json                # UI translatable strings
 │   └── translations/en.json        # English translations
-├── tests/                          # Test suite (235 tests, 100% coverage)
+├── tests/                          # Test suite (281 tests, 100% coverage)
 │   ├── conftest.py                 # pytest fixtures
+│   ├── _fake_recorder.py           # In-memory recorder stand-in (see Section 7)
 │   ├── test_config_flow.py
-│   ├── test_coordinator_*.py       # Coordinator tests (multiple files)
+│   ├── test_coordinator.py
+│   ├── test_coordinator_scenarios.py  # Multi-poll scenarios via _fake_recorder
 │   ├── test_phase5_register_aware.py
 │   ├── test_sensor.py
 │   ├── test_rates.py
@@ -165,7 +167,7 @@ The central orchestrator. Key methods:
 
 | Method | When called | What it does |
 |---|---|---|
-| `_async_update_data()` | Every 12h by HA | Logs in, fetches data, inserts stats |
+| `_async_update_data()` | Every 6h by HA | Logs in, fetches data, inserts stats |
 | `_insert_statistics()` | From `_async_update_data` | Routes accounts to backfill or update |
 | `_discover_registers()` | Once per new account | Counts physical meter registers |
 | `_process_account()` | Per account/register | Decides backfill vs incremental |
@@ -259,7 +261,49 @@ existing Energy Dashboard history is never broken.
 - Already-recorded hours are skipped in output but still contribute to the
   cumulative Wh counter for tier accuracy.
 
-### 5.6 Zero-Consumption Filtering
+### 5.6 `entry.data` vs `entry.options`, and why some changes need a reload
+
+`entry.options` (changed via the options flow) only triggers
+`update_listener` → `coordinator.async_request_refresh()` — the existing
+`DominionSCCoordinator` instance (and its `self.api` client) keeps running.
+That's fine for preferences the coordinator reads fresh on every poll (cost
+mode, gas cost mode).
+
+`entry.data` is different: it's read once, at construction time, in
+`DominionSCCoordinator.__init__()` (credentials, `CONF_LOGIN_DATA`,
+`CONF_PILOT_ID`). Changing an `entry.data` value without recreating the
+coordinator leaves it running against stale data until the next full HA
+restart.
+
+`CONF_PILOT_ID` is the example: it's a connection parameter for the
+`DominionSC` API client (like the credentials), not a display preference, so
+it belongs in `entry.data`. But the options flow is still the natural place
+for the user to *change* it later without a full reconfigure. The fix in
+`options_flow.py`'s `async_step_init` is to detect the change, write it with
+`hass.config_entries.async_update_entry(..., data={...})`, and explicitly
+call `hass.config_entries.async_schedule_reload(entry.entry_id)` — which tears
+down and rebuilds the coordinator via `async_setup_entry`, exactly like a
+restart would. If you add another `entry.data` field that's editable via the
+options flow, follow this same pattern.
+
+### 5.7 Fire-and-forget background tasks must handle their own errors
+
+`async_recalculate_historic_costs()` is launched via
+`hass.async_create_task(...)` from the options flow and never awaited by its
+caller — the options flow saves and returns immediately (see its module
+docstring). That means **nothing else will ever observe an exception raised
+inside it.** An uncaught error (a network timeout, the connection being torn
+down by an HA restart mid-request, etc.) doesn't fail loudly in a place the
+user would see — it becomes an "unhandled task exception" traceback dumped
+into the log by asyncio itself, with zero indication to the user that their
+recalculation silently failed.
+
+Any coroutine handed to `hass.async_create_task` (or otherwise fired without
+being awaited) must catch its own expected exceptions at the top level and
+surface them some other way — here, via `persistent_notification`. Don't
+rely on a future caller to add error handling; there isn't one.
+
+### 5.8 Zero-Consumption Filtering
 
 The Dominion API sometimes returns all-zero intervals for a day when that
 day's data hasn't been processed yet (e.g. very recent days or holidays).
@@ -310,16 +354,28 @@ new entry automatically. No other files need to change.
 **State class guidance:**
 - Use `TOTAL` for running sums that reset on a known event (e.g. `cost_to_date`
   resets at billing cycle start). Always pair with `last_reset_fn`.
-- Use `MEASUREMENT` for point-in-time values such as forecasts or averages
-  (e.g. `forecasted_cost`, `typical_cost`). Do not use `TOTAL` for these.
+- Use no `state_class` at all (leave it unset) for point-in-time values such
+  as forecasts or averages (e.g. `forecasted_cost`, `typical_cost`).
+  **`device_class=MONETARY` only accepts `state_class` of `None` or `TOTAL`
+  — `MEASUREMENT` is invalid for monetary sensors and HA will log a startup
+  warning ("state class 'measurement' which is impossible considering device
+  class") and refuse to record it as a statistic.** This bit us once already
+  — see `test_forecasted_cost_state_class_is_none` / `test_typical_cost_state_class_is_none`
+  in `test_sensor.py`.
 
 ### Add a new config/options field
 
 1. Add a `CONF_*` constant in `const.py`.
-2. Add the form field in the relevant `config_flow.py` or `options_flow.py`
+2. Decide whether it belongs in `entry.data` or `entry.options` — see
+   Section 5.6. A user preference the coordinator re-reads every poll goes
+   in `entry.options`; a connection parameter the coordinator only reads at
+   construction time goes in `entry.data` and needs an explicit
+   `async_schedule_reload()` when changed post-install.
+3. Add the form field in the relevant `config_flow.py` or `options_flow.py`
    step.
-3. Read the value in the coordinator (typically via `config_entry.options.get()`).
-4. Update `tests/test_config_flow.py` / `test_coordinator_*.py` accordingly.
+4. Read the value in the coordinator (via `config_entry.options.get()` or
+   `config_entry.data.get()`, per step 2).
+5. Update `tests/test_config_flow.py` / `test_coordinator_*.py` accordingly.
 
 ---
 
@@ -352,6 +408,18 @@ Tests are in `tests/`. The main fixtures are in `conftest.py`:
 The pure modules (`billing.py`, `rates.py`, `cost.py`, `aggregation.py`,
 `statistics_ids.py`) are tested with synthetic inputs — no HA mocking needed.
 
+Most coordinator tests mock each recorder call individually with a
+hand-built `side_effect` for one specific call sequence — precise, but
+tedious to extend across several poll cycles. `tests/_fake_recorder.py`
+provides `FakeStatisticsStore`, a lightweight in-memory stand-in for the
+real recorder (dedupes by hour, returns POSIX-timestamp floats exactly like
+the real recorder does) plus a `patched_recorder()` context manager that
+wires it in. Use it when a test needs to drive the coordinator through
+several real `_async_update_data()` polls and assert on the final
+accumulated statistics — see `tests/test_coordinator_scenarios.py` for
+worked examples (a multi-poll gap-fill, and a recalculation run against real
+backfilled data).
+
 ### Coverage target
 
 100% line and branch coverage is enforced in CI. If you add new code, add
@@ -361,8 +429,9 @@ tests for every branch.
 
 | File | What it covers |
 |---|---|
-| `test_config_flow.py` | All config flow steps, TFA, reauth, gas cost mode |
+| `test_config_flow.py` | All config flow steps, TFA, reauth, gas cost mode, pilot ID |
 | `test_coordinator.py` | Comprehensive coordinator scenarios, cost calculation, statistics pipeline |
+| `test_coordinator_scenarios.py` | Multi-poll scenarios (gap-fill, recalculation) via `_fake_recorder.py` |
 | `test_phase5_register_aware.py` | Register discovery, multi-register routing |
 | `test_sensor.py` | Sensor entity value extraction, gas cost sensor |
 | `test_rates.py` | Rate plan registry, cost mode choices |

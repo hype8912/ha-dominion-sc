@@ -2170,6 +2170,32 @@ async def test_public_recalculation_lock(coordinator: DominionSCCoordinator) -> 
     locked.assert_awaited_once()
 
 
+async def test_recalculation_network_error_is_caught(
+    coordinator: DominionSCCoordinator,
+) -> None:
+    """A network failure during recalculation is caught and surfaced as a
+    notification instead of leaking as an unhandled task exception -- this
+    coroutine runs fire-and-forget via hass.async_create_task in the options
+    flow, so nothing else will ever observe an exception raised here."""
+    with (
+        patch.object(
+            coordinator,
+            "_async_recalculate_historic_costs_locked",
+            new=AsyncMock(side_effect=TimeoutError("boom")),
+        ),
+        patch(
+            "custom_components.dominionsc.coordinator.persistent_notification.async_create"
+        ) as notify,
+    ):
+        await coordinator.async_recalculate_historic_costs(
+            date.today() - timedelta(days=1),
+            date.today(),
+            {CONF_COST_MODE: COST_MODE_NONE},
+        )
+    notify.assert_called_once()
+    assert not coordinator.recalculation_lock.locked()
+
+
 async def test_async_update_data_gas_cost_populated(
     hass: HomeAssistant,
 ) -> None:

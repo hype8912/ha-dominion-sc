@@ -32,7 +32,7 @@ Re-authentication flow
 Key design decisions
 --------------------
 - The TFA session token (``CONF_LOGIN_DATA``) is stored in ``entry.data`` so
-  future 12-hour re-logins skip the MFA challenge without user interaction.
+  future 6-hour re-logins skip the MFA challenge without user interaction.
 - Backfill and cost-mode choices are stored in ``entry.options`` (not ``data``)
   so they can be changed later via the options flow without re-authenticating.
 - Options are handled by :class:`~.options_flow.DominionSCOptionsFlow`
@@ -55,6 +55,7 @@ from dominionsc import (
     MfaChallenge,
     create_cookie_jar,
 )
+from dominionsc.const import BIDGELY_PILOT_ID
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     ConfigEntry,
@@ -75,6 +76,7 @@ from .const import (
     CONF_FIXED_RATE,
     CONF_GAS_COST_MODE,
     CONF_LOGIN_DATA,
+    CONF_PILOT_ID,
     CONF_SERVICE_ADDR,
     COST_MODE_FIXED,
     COST_MODE_NONE,
@@ -126,6 +128,7 @@ async def _validate_login(
         # successful TFA submission. Passing it lets the API skip TFA on
         # subsequent logins. It is None on the very first login attempt.
         data.get(CONF_LOGIN_DATA),
+        pilot_id=data.get(CONF_PILOT_ID),
     )
     _LOGGER.debug("API: async_login")
     await api.async_login()
@@ -158,6 +161,7 @@ async def _fetch_accounts(
             data[CONF_USERNAME],
             data[CONF_PASSWORD],
             data.get(CONF_LOGIN_DATA),
+            pilot_id=data.get(CONF_PILOT_ID),
         )
         await api.async_login()
         accounts, service_addr = await api.async_get_accounts()
@@ -263,6 +267,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         schema_dict: VolDictType = {
             vol.Required(CONF_USERNAME): str,
             vol.Required(CONF_PASSWORD): str,
+            vol.Optional(CONF_PILOT_ID, default=BIDGELY_PILOT_ID): str,
         }
 
         return self.async_show_form(
@@ -340,7 +345,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         (``login_data``) which is stored in ``_data[CONF_LOGIN_DATA]``. This
         token is persisted in ``entry.data`` and passed to the API on every
         subsequent login, allowing the coordinator to re-authenticate every
-        12 hours without prompting the user for another TFA code.
+        6 hours without prompting the user for another TFA code.
 
         If this is a re-authentication flow, ends here (no backfill/cost-mode
         steps needed — those settings already exist in the entry's options).

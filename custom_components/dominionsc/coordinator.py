@@ -74,6 +74,7 @@ from dominionsc import (
 )
 from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
 from dominionsc.models.register_reads import RegisterReads
+from homeassistant.components import persistent_notification
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -104,6 +105,7 @@ from .const import (
     CONF_EXTENDED_BACKFILL,
     CONF_EXTENDED_COST_BACKFILL,
     CONF_LOGIN_DATA,
+    CONF_PILOT_ID,
     CONF_SERVICE_ADDR,
     COST_MODE_NONE,
     DOMAIN,
@@ -162,7 +164,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
       statistics load started).
     - The recalculation lock (prevents concurrent historic cost recalculations).
 
-    It extends HA's ``DataUpdateCoordinator`` with a 12-hour polling interval.
+    It extends HA's ``DataUpdateCoordinator`` with a 6-hour polling interval.
     The base class handles debouncing, listener notification, and error-state
     management automatically.
     """
@@ -187,9 +189,9 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            # Dominion's data is updated once daily. Poll every 12 hours so
-            # we are at most 12 hours behind without hammering the API.
-            update_interval=timedelta(hours=12),
+            # Dominion's data is updated once daily. Poll every 6 hours so
+            # we are at most 6 hours behind without hammering the API.
+            update_interval=timedelta(hours=6),
         )
         # Long-lived API client. The session is re-authenticated on every poll
         # cycle because Dominion sessions expire after a few minutes of inactivity.
@@ -200,6 +202,10 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             # Cached TFA session token. Passing it allows the API client to
             # skip the MFA challenge on re-authentication calls.
             config_entry.data.get(CONF_LOGIN_DATA),
+            # Bidgely pilot ID override, if the user changed it from the
+            # library's default (see const.CONF_PILOT_ID). None for installs
+            # that never set it, which falls back to the library's default.
+            pilot_id=config_entry.data.get(CONF_PILOT_ID),
         )
         # Maps a "backfill key" (account or account:usage_point_id) to True
         # while the initial statistics backfill has been submitted to the
@@ -233,7 +239,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         """
         Fetch account data from the Dominion API and insert statistics.
 
-        Called every 12 hours by the base coordinator. The sequence is:
+        Called every 6 hours by the base coordinator. The sequence is:
         1. Re-authenticate (sessions are short-lived).
         2. Fetch accounts and billing forecast.
         3. Call ``_insert_statistics`` to upsert hourly consumption / cost data
@@ -250,7 +256,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         """
         try:
             # Sessions expire after a few minutes. Since we only poll every
-            # 12 hours, always treat the previous session as expired and
+            # 6 hours, always treat the previous session as expired and
             # re-authenticate unconditionally.
             _LOGGER.debug("API: async_login")
             await self.api.async_login()
@@ -763,7 +769,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         """
         Incrementally update statistics since the last recorded data point.
 
-        Called when statistics already exist in the recorder (regular 12-hour
+        Called when statistics already exist in the recorder (regular 6-hour
         polls after the initial backfill). The strategy is:
 
         1. Determine the last recorded statistic's timestamp and running sum.
@@ -1277,7 +1283,14 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         can detect a running recalculation and block a second one from starting.
 
         The actual work is delegated to
-        :meth:`_async_recalculate_historic_costs_locked`.
+        :meth:`_async_recalculate_historic_costs_locked`. Because this coroutine
+        is handed to ``hass.async_create_task`` and never awaited by its caller
+        (the options flow saves and returns immediately), nothing else will ever
+        observe an exception raised in here -- it must be the last line of
+        defense. A network error (e.g. the connection being torn down mid-request
+        by an HA restart) would otherwise surface only as an "unhandled task
+        exception" traceback in the log, with no indication to the user that
+        their recalculation silently failed.
 
         Args:
             start_date:  First day of the recalculation window (inclusive).
@@ -1288,9 +1301,23 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         """
         async with self.recalculation_lock:
-            await self._async_recalculate_historic_costs_locked(
-                start_date, end_date, new_options
-            )
+            try:
+                await self._async_recalculate_historic_costs_locked(
+                    start_date, end_date, new_options
+                )
+            except (CannotConnect, ApiException, TimeoutError) as err:
+                _LOGGER.error("Historic cost recalculation failed: %s", err)
+                persistent_notification.async_create(
+                    self.hass,
+                    (
+                        f"The historic cost recalculation for {start_date} to "
+                        f"{end_date} failed: {err}\n\n"
+                        "Go to **Settings → Devices & Services → Dominion Energy SC "
+                        "→ Configure** to try again."
+                    ),
+                    title="Dominion Energy SC: Recalculation Failed",
+                    notification_id="dominionsc_recalculation_failed",
+                )
 
     async def _async_recalculate_historic_costs_locked(
         self,

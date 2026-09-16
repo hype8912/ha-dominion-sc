@@ -67,6 +67,15 @@ CONF_LOGIN_DATA = "login_data"
 # Falls back to the live API value when absent (existing installs).
 CONF_SERVICE_ADDR: Final = "service_addr_account_no"
 
+# Bidgely multi-tenant pilot ID override, passed through to the dominionsc
+# library's DominionSC(pilot_id=...). Stored in entry.data (not options)
+# because it is a connection parameter like the account credentials, and
+# changing it requires the API client to be rebuilt (see options_flow.py,
+# which forces an entry reload when this value changes). Absent for installs
+# that predate this field or never overrode the default; the library falls
+# back to its own BIDGELY_PILOT_ID constant in that case.
+CONF_PILOT_ID: Final = "pilot_id"
+
 # ---------------------------------------------------------------------------
 # Config-entry OPTIONS keys  (entry.options — user-configurable via options flow)
 # ---------------------------------------------------------------------------

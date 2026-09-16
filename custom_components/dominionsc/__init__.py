@@ -23,7 +23,7 @@ Integration lifecycle (from Home Assistant's perspective)
    ``.storage/core.config_entries``.
 2. HA calls ``async_setup_entry`` on every restart (and immediately after the
    flow completes).
-3. The coordinator polls every 12 hours. On each poll it:
+3. The coordinator polls every 6 hours. On each poll it:
    a. Re-authenticates with the Dominion API.
    b. Fetches account list, forecast, and usage intervals.
    c. Inserts or updates hourly long-term statistics in the HA recorder.

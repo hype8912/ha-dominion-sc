@@ -91,7 +91,7 @@ __init__.async_setup_entry()
         |
 coordinator.py  ──  Created, first refresh triggered
         |
-Every 12 hours: _async_update_data()
+Every 6 hours: _async_update_data()
         |
         ├── api.async_login()          Re-authenticate
         ├── api.async_get_accounts()   Get account types (ELECTRIC, GAS)

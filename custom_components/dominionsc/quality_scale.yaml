@@ -5,7 +5,7 @@ rules:
     comment: The integration does not provide any service actions.
   appropriate-polling:
     status: done
-    comment: Polling occurs every 12 hours.
+    comment: Polling occurs every 6 hours.
   brands: done
   common-modules: done
   config-flow-test-coverage: done

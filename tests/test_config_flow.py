@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from dominionsc.const import BIDGELY_PILOT_ID
 from dominionsc.exceptions import ApiException, CannotConnect, InvalidAuth, MfaChallenge
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
@@ -23,6 +24,7 @@ from custom_components.dominionsc.const import (
     CONF_FIXED_RATE,
     CONF_GAS_COST_MODE,
     CONF_LOGIN_DATA,
+    CONF_PILOT_ID,
     CONF_SERVICE_ADDR,
     COST_MODE_FIXED,
     COST_MODE_NONE,
@@ -201,6 +203,53 @@ async def test_user_flow_service_addr_stored_in_entry_data(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_SERVICE_ADDR] == "addr_123"
+
+
+async def test_user_flow_pilot_id_defaults_when_not_entered(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """CONF_PILOT_ID falls back to the library's default when the user leaves
+    the (optional, advanced) field blank on initial setup."""
+    result = await _login_to_cost_mode(hass, user_input)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_PILOT_ID] == BIDGELY_PILOT_ID
+
+
+async def test_user_flow_pilot_id_custom_value_stored(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """A custom pilot ID entered on initial setup is stored in entry.data and
+    passed through to the login/account-fetch API calls for that same flow."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    with patch("custom_components.dominionsc.config_flow._validate_login"):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**user_input, CONF_PILOT_ID: "99999"}
+        )
+    assert result["step_id"] == "backfill_options"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EXTENDED_BACKFILL: False, CONF_EXTENDED_COST_BACKFILL: False},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_PILOT_ID] == "99999"
 
 
 async def test_fetch_accounts_returns_accounts_and_service_addr(
@@ -1046,6 +1095,57 @@ async def test_options_flow_recalculation_in_progress(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
     assert result["errors"] == {"base": "recalculation_in_progress"}
+
+
+# ---------------------------------------------------------------------------
+# Options flow — pilot ID (entry.data, not entry.options)
+# ---------------------------------------------------------------------------
+
+
+async def test_options_flow_pilot_id_change_updates_data_and_reloads(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Changing the pilot ID updates entry.data and schedules a reload so the
+    coordinator rebuilds its DominionSC client -- a plain options refresh
+    would otherwise keep using the stale client with the old pilot_id."""
+    entry = _make_entry(hass, user_input)
+
+    with patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as reload_mock:
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {CONF_COST_MODE: COST_MODE_NONE, CONF_PILOT_ID: "99999"},
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_PILOT_ID] == "99999"
+    reload_mock.assert_called_once_with(entry.entry_id)
+
+
+async def test_options_flow_pilot_id_unchanged_no_reload(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Submitting the options form without changing the pilot ID does not
+    touch entry.data or trigger a reload -- only a real change should."""
+    entry = _make_entry(hass, user_input)
+
+    with patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as reload_mock:
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {CONF_COST_MODE: COST_MODE_NONE}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_PILOT_ID not in entry.data
+    reload_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

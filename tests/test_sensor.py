@@ -373,16 +373,18 @@ def test_last_reset_is_none_for_non_total_sensors(sensor_key: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_forecasted_cost_state_class_is_measurement() -> None:
-    """forecasted_cost uses MEASUREMENT not TOTAL — it is a point-in-time estimate."""
+def test_forecasted_cost_state_class_is_none() -> None:
+    """forecasted_cost has no state_class — MONETARY only allows None or TOTAL,
+    and this is a point-in-time estimate rather than a running total."""
     desc = next(s for s in BILLING_SENSORS if s.key == "forecasted_cost")
-    assert desc.state_class == SensorStateClass.MEASUREMENT
+    assert desc.state_class is None
 
 
-def test_typical_cost_state_class_is_measurement() -> None:
-    """typical_cost uses MEASUREMENT not TOTAL — it is a point-in-time estimate."""
+def test_typical_cost_state_class_is_none() -> None:
+    """typical_cost has no state_class — MONETARY only allows None or TOTAL,
+    and this is a point-in-time estimate rather than a running total."""
     desc = next(s for s in BILLING_SENSORS if s.key == "typical_cost")
-    assert desc.state_class == SensorStateClass.MEASUREMENT
+    assert desc.state_class is None
 
 
 def test_cost_to_date_state_class_is_total() -> None:

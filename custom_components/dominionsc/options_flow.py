@@ -37,12 +37,14 @@ from datetime import date
 from typing import Any
 
 import voluptuous as vol
+from dominionsc.const import BIDGELY_PILOT_ID
 from homeassistant.config_entries import ConfigEntry, ConfigFlowResult, OptionsFlow
 
 from .const import (
     CONF_COST_MODE,
     CONF_FIXED_RATE,
     CONF_GAS_COST_MODE,
+    CONF_PILOT_ID,
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_8,
@@ -155,6 +157,23 @@ class DominionSCOptionsFlow(OptionsFlow):
                     CONF_GAS_COST_MODE, COST_MODE_NONE
                 )
 
+            # pilot_id lives in entry.data (it's a connection parameter for the
+            # API client, like credentials) rather than entry.options. Update
+            # it directly and reload the entry so the coordinator rebuilds its
+            # DominionSC client with the new value -- unlike cost-mode options,
+            # a plain async_request_refresh() would keep using the stale client.
+            new_pilot_id = user_input.get(CONF_PILOT_ID, BIDGELY_PILOT_ID)
+            if new_pilot_id != self._config_entry.data.get(
+                CONF_PILOT_ID, BIDGELY_PILOT_ID
+            ):
+                self.hass.config_entries.async_update_entry(
+                    self._config_entry,
+                    data={**self._config_entry.data, CONF_PILOT_ID: new_pilot_id},
+                )
+                self.hass.config_entries.async_schedule_reload(
+                    self._config_entry.entry_id
+                )
+
             if self._selected_mode == COST_MODE_FIXED:
                 return await self.async_step_fixed_rate()
             if self._selected_mode in RATE_PLAN_REGISTRY:
@@ -173,6 +192,10 @@ class DominionSCOptionsFlow(OptionsFlow):
                 CONF_COST_MODE,
                 default=current_options.get(CONF_COST_MODE, COST_MODE_RATE_8),
             ): vol.In(mode_choices),
+            vol.Optional(
+                CONF_PILOT_ID,
+                default=self._config_entry.data.get(CONF_PILOT_ID, BIDGELY_PILOT_ID),
+            ): str,
         }
         if has_gas:
             gas_choices = build_gas_cost_mode_choices()

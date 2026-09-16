@@ -11,7 +11,7 @@ A Home Assistant custom integration for Dominion Energy South Carolina customers
 - **Hourly Interval Energy Usage Data**: Track your energy consumption with hourly granularity
 - **Billing Information**: Monitor current billing cycle costs and forecasts
 - **Energy Dashboard Compatibility**: Seamlessly integrate with Home Assistant's Energy Dashboard
-- **Automatic Updates**: Data refreshes every 12 hours
+- **Automatic Updates**: Data refreshes every 6 hours
 - **Cost Estimation Options**:
   - South Carolina Rate Schedule 8 (Residential Service — tiered)
   - South Carolina Rate Schedule 6 (Energy Saver/Conservation — tiered)
@@ -117,7 +117,7 @@ If you don't know your rate, selecting **Rate 8** (Residential Service) is the m
 
 ### What to expect after setup
 
-- **First data may take up to 24–48 hours to appear.** Dominion Energy SC reports interval data with a delay of 1–2 days. The integration will poll within minutes, but if Dominion has not yet published recent data, the Energy Dashboard will show no consumption until the next poll cycle (every 12 hours) when data becomes available.
+- **First data may take up to 24–48 hours to appear.** Dominion Energy SC reports interval data with a delay of 1–2 days. The integration will poll within minutes, but if Dominion has not yet published recent data, the Energy Dashboard will show no consumption until the next poll cycle (every 6 hours) when data becomes available.
 - **The integration creates a device** named after your service address under **Settings** → **Devices & Services** → **Dominion Energy SC**.
 - If you enabled extended backfill, the initial load of 365 days of data runs in the background and may take a few minutes to complete.
 
@@ -254,7 +254,7 @@ Rate schedules have an effective date (currently 2026-07-01 for all SC rates). C
 
 ### Energy Dashboard shows gaps or missing history
 
-If you see a gap that starts on a specific date, your account's data was not available from the Dominion API for that period. The integration will automatically fill in late-arriving data on the next poll cycle (every 12 hours).
+If you see a gap that starts on a specific date, your account's data was not available from the Dominion API for that period. The integration will automatically fill in late-arriving data on the next poll cycle (every 6 hours).
 
 ---
 

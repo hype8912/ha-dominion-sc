@@ -137,7 +137,10 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         device_class=SensorDeviceClass.MONETARY,
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement="USD",
-        state_class=SensorStateClass.MEASUREMENT,
+        # No state_class: HA only allows None or TOTAL for MONETARY sensors,
+        # and this value isn't a running total -- it's Dominion's point-in-time
+        # projection for the current billing cycle, which can rise or fall
+        # between polls as usage patterns change.
         suggested_display_precision=2,
         # Dominion's projected end-of-cycle cost based on current usage trend.
         value_fn=lambda data: data.forecast.forecasted_cost if data.forecast else None,
@@ -148,7 +151,8 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         device_class=SensorDeviceClass.MONETARY,
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement="USD",
-        state_class=SensorStateClass.MEASUREMENT,
+        # No state_class: see forecasted_cost above -- MONETARY only allows
+        # None or TOTAL, and this is a historical-average reference value.
         suggested_display_precision=2,
         # Historical average cost for this time of year (from Dominion API).
         value_fn=lambda data: data.forecast.typical_cost if data.forecast else None,

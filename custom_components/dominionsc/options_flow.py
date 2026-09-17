@@ -176,10 +176,21 @@ class DominionSCOptionsFlow(OptionsFlow):
 
             if self._selected_mode == COST_MODE_FIXED:
                 return await self.async_step_fixed_rate()
-            if self._selected_mode in RATE_PLAN_REGISTRY:
+
+            # Offer recalculation if either commodity has a priced mode
+            # selected. Gating this on electric alone would skip the prompt
+            # entirely for a user whose electric mode is None but who just
+            # turned on a gas rate plan -- their existing gas consumption
+            # would then never get priced (see coordinator.py's
+            # _async_recalculate_historic_costs_locked docstring).
+            gas_mode_selected = self._new_options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
+            if (
+                self._selected_mode in RATE_PLAN_REGISTRY
+                or gas_mode_selected != COST_MODE_NONE
+            ):
                 self._new_options[CONF_COST_MODE] = self._selected_mode
                 return await self.async_step_recalculate_history()
-            # No cost calculation - skip history recalculation (nothing to calculate)
+            # Neither commodity has a priced mode - nothing to recalculate.
             return self.async_create_entry(
                 title="", data={CONF_COST_MODE: COST_MODE_NONE, **self._new_options}
             )

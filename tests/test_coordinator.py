@@ -2158,6 +2158,121 @@ async def test_recalculate_no_cost_rows_does_not_push(
     push.assert_not_called()
 
 
+async def test_recalculate_gas_no_gas_account_skips(
+    coordinator: DominionSCCoordinator,
+) -> None:
+    """Gas cost mode set but no GAS account present -> nothing to recalculate."""
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
+    coordinator.api.get_timezone.return_value = "UTC"
+    coordinator.api.async_get_accounts = AsyncMock(
+        return_value=({"ELECTRIC"}, "123 Main")
+    )
+    await coordinator._async_recalculate_historic_costs_locked(
+        start,
+        end,
+        {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+
+async def test_recalculate_gas_success(coordinator: DominionSCCoordinator) -> None:
+    """Enabling a gas rate plan prices previously-recorded gas consumption.
+
+    Regression test for the bug where gas consumption recorded before (or
+    without) a priced cost mode stayed at $0.00 forever -- recalculation
+    used to only handle ELECTRIC.
+    """
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
+    coordinator.api.get_timezone.return_value = "UTC"
+    coordinator.api.async_get_accounts = AsyncMock(return_value=({"GAS"}, "123 Main"))
+    cid = "dominionsc:123_main_gas_energy_consumption"
+    rows = {
+        cid: [
+            {
+                # 1000 ft³ -> 10 therms -> 10 * $2.04149 = $20.4149 at Rate 32S.
+                "start": datetime.combine(start, datetime.min.time()).timestamp(),
+                "state": 1000.0,
+            }
+        ]
+    }
+    recorder = MagicMock()
+
+    async def executor(func, *_args):
+        if func.__name__ == "statistics_during_period":
+            return rows
+        return {}
+
+    recorder.async_add_executor_job = executor
+    with (
+        patch(
+            "custom_components.dominionsc.coordinator.get_instance",
+            return_value=recorder,
+        ),
+        patch.object(coordinator, "_push_cost_statistics") as push,
+    ):
+        await coordinator._async_recalculate_historic_costs_locked(
+            start,
+            end,
+            {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+        )
+    push.assert_called_once()
+    assert push.call_args.args[0] == "dominionsc:123_main_gas_energy_cost"
+    assert push.call_args.args[-1] == pytest.approx(20.4149)
+
+
+async def test_recalculate_electric_and_gas_both_run(
+    coordinator: DominionSCCoordinator,
+) -> None:
+    """When both cost modes change, both accounts get recalculated independently."""
+    from custom_components.dominionsc.const import CONF_GAS_COST_MODE, COST_MODE_RATE_32S
+
+    start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
+    coordinator.api.get_timezone.return_value = "UTC"
+    coordinator.api.async_get_accounts = AsyncMock(
+        return_value=({"ELECTRIC", "GAS"}, "123 Main")
+    )
+    electric_cid = "dominionsc:123_main_electric_energy_consumption"
+    gas_cid = "dominionsc:123_main_gas_energy_consumption"
+    row_start = datetime.combine(start, datetime.min.time()).timestamp()
+
+    async def executor(func, *args):
+        if func.__name__ == "statistics_during_period":
+            stat_ids = args[3]
+            if electric_cid in stat_ids:
+                return {electric_cid: [{"start": row_start, "state": 1000.0}]}
+            if gas_cid in stat_ids:
+                return {gas_cid: [{"start": row_start, "state": 1000.0}]}
+        return {}
+
+    recorder = MagicMock()
+    recorder.async_add_executor_job = executor
+    with (
+        patch(
+            "custom_components.dominionsc.coordinator.get_instance",
+            return_value=recorder,
+        ),
+        patch.object(coordinator, "_push_cost_statistics") as push,
+    ):
+        await coordinator._async_recalculate_historic_costs_locked(
+            start,
+            end,
+            {
+                CONF_COST_MODE: COST_MODE_FIXED,
+                CONF_FIXED_RATE: 0.2,
+                CONF_GAS_COST_MODE: COST_MODE_RATE_32S,
+            },
+        )
+    assert push.call_count == 2
+    pushed_ids = {call.args[0] for call in push.call_args_list}
+    assert pushed_ids == {
+        "dominionsc:123_main_electric_energy_cost",
+        "dominionsc:123_main_gas_energy_cost",
+    }
+
+
 async def test_public_recalculation_lock(coordinator: DominionSCCoordinator) -> None:
     with patch.object(
         coordinator, "_async_recalculate_historic_costs_locked", new=AsyncMock()

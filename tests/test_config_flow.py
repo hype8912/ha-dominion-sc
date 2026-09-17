@@ -1332,7 +1332,13 @@ async def test_options_flow_gas_mode_rate_32s_saved(
     mock_setup_entry: AsyncMock,
     user_input: dict,
 ) -> None:
-    """Gas cost mode selection in options flow is persisted."""
+    """Gas cost mode selection in options flow is persisted.
+
+    Selecting a gas rate plan while electric cost mode is None still routes
+    through recalculate_history (not straight to CREATE_ENTRY) -- gas needs
+    the option to recalculate its own previously-recorded consumption, same
+    as electric. See coordinator.py's recalculation docstring.
+    """
     entry = _make_entry(hass, user_input)
 
     mock_coordinator = MagicMock()
@@ -1346,6 +1352,12 @@ async def test_options_flow_gas_mode_rate_32s_saved(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "recalculate_history"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_RECALCULATE_HISTORY: False}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -1417,6 +1429,12 @@ async def test_options_flow_gas_cost_mode_rate32s_saved(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "recalculate_history"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_RECALCULATE_HISTORY: False}
     )
 
     # Assert

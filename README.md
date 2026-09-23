@@ -126,11 +126,11 @@ If you don't know your rate, selecting **Rate 8** (Residential Service) is the m
 
 ### Changing Cost Settings After Setup
 
-Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → **Configure**. When switching between rate schedules (electric) or enabling a gas rate plan, you will be offered the option to recalculate historical cost statistics over a date range you choose using the new rate — electric and gas are recalculated independently, so this works whether you're changing one, the other, or both at once.
+Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → **Configure**. When switching between rate schedules (electric) or enabling a gas rate plan, you will be offered the option to re-price your historical cost statistics with the new rate, over a date range you choose. Electric and gas are recalculated independently, so this works whether you're changing one, the other, or both at once.
 
 The same screen also lets you change the **Bidgely pilot ID (advanced)**. Changing it reloads the integration.
 
-The date-range picker defaults its start date to the earliest consumption data available for whatever you're recalculating, so accepting the default reprices your full history. If you only want to reprice part of your history, adjust the start date.
+The date-range picker defaults its start date to the earliest consumption data available for whatever you're recalculating, so accepting the default re-prices your full history. If you only want to re-price part of your history, adjust the start date.
 
 ### Configuration Parameters Reference
 
@@ -258,7 +258,9 @@ Each Dominion Energy SC account can only be added once. If you need to reconfigu
 
 ### Cost statistics show $0 for historical data
 
-Each rate schedule only has pricing from the date its rates became effective. Rate 6 and Rate 8 also include the prior tariff that was in effect from 2025-07-23 through 2026-06-30. All other schedules start on 2026-07-01. Cost shows $0.00 for any interval before the earliest known rates for your schedule (for example, before 2025-07-23 for Rate 8, or before 2026-07-01 for Rate 5). This is expected, and it only affects extended backfill or recalculated history.
+Every schedule carries all the tariff periods the library records, and each interval is priced with the period that was in effect on its own date, so a rate change part-way through your history is handled automatically. The table below lists the earliest recorded period per schedule. Cost shows $0.00 for any interval before that date (for example, before 2025-07-23 for Rate 8, or before 2025-09-01 for either gas rate). This is expected, and it only affects extended backfill or recalculated history.
+
+When an update adds rates for dates that previously had none, the integration posts a one-time notification prompting you to run **Recalculate History** so that stored $0.00 costs are re-priced.
 
 ### Energy Dashboard shows gaps or missing history
 
@@ -278,16 +280,16 @@ If you see a gap that starts on a specific date, your account's data was not ava
 
 ### Supported Rate Schedules
 
-| Rate | Description | Type | Pricing Effective From |
+| Rate | Description | Type | Priced From |
 |------|-------------|------|----------------|
-| Rate 1 | Good Cents Residential Service | Tiered electric (closed to new customers) | 2026-07-01 |
-| Rate 2 | Low Use Residential Service | Flat electric | 2026-07-01 |
-| Rate 5 | Time of Use | TOU electric | 2026-07-01 |
-| Rate 6 | Energy Saver/Conservation | Tiered electric | 2026-07-01 (prior rates from 2025-07-23) |
-| Rate 7 | Time-of-Use Demand | TOU electric (energy only; demand charge not tracked) | 2026-07-01 |
-| Rate 8 | Residential Service | Tiered electric | 2026-07-01 (prior rates from 2025-07-23) |
-| Rate 32S | Gas Standard Service | Flat gas | 2026-07-01 |
-| Rate 32V | Gas Value Service | Flat gas | 2026-07-01 |
+| Rate 1 | Good Cents Residential Service | Tiered electric (closed to new customers) | 2025-07-23 |
+| Rate 2 | Low Use Residential Service | Flat electric | 2025-07-23 |
+| Rate 5 | Time of Use | TOU electric | 2024-09-01 |
+| Rate 6 | Energy Saver/Conservation | Tiered electric | 2025-07-23 |
+| Rate 7 | Time-of-Use Demand | TOU electric (energy only; demand charge not tracked) | 2025-07-23 |
+| Rate 8 | Residential Service | Tiered electric | 2025-07-23 |
+| Rate 32S | Gas Standard Service | Flat gas | 2025-09-01 |
+| Rate 32V | Gas Value Service | Flat gas | 2025-09-01 |
 | Fixed Rate | Custom $/kWh | Flat electric | n/a |
 
 ---

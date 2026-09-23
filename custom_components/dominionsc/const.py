@@ -161,7 +161,7 @@ CONF_LAST_RATE_SCHEMA_VERSION: Final = "last_rate_schema_version"
 # Increment this whenever tariff rates are corrected (not just added).
 # Existing users whose stored version is lower will see a persistent
 # notification prompting them to recalculate historical cost statistics.
-CURRENT_RATE_SCHEMA_VERSION: Final = 2
+CURRENT_RATE_SCHEMA_VERSION: Final = 3
 
 # ---------------------------------------------------------------------------
 # Helper functions

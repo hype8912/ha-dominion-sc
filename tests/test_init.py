@@ -86,12 +86,15 @@ async def test_setup_entry_fires_notification_when_version_absent(hass: HomeAssi
     assert entry.data.get(CONF_LAST_RATE_SCHEMA_VERSION) == CURRENT_RATE_SCHEMA_VERSION
 
 
-async def test_setup_entry_fires_notification_when_version_behind(hass: HomeAssistant, mock_coordinator: MagicMock) -> None:
-    """CONF_LAST_RATE_SCHEMA_VERSION=1 (< 2) → notification fired."""
+@pytest.mark.parametrize("stored_version", [1, CURRENT_RATE_SCHEMA_VERSION - 1])
+async def test_setup_entry_fires_notification_when_version_behind(
+    hass: HomeAssistant, mock_coordinator: MagicMock, stored_version: int
+) -> None:
+    """Any stored version below the current one fires the recalculation notification."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={"username": "test", CONF_LAST_RATE_SCHEMA_VERSION: 1},
-        entry_id="notify-behind-id",
+        data={"username": "test", CONF_LAST_RATE_SCHEMA_VERSION: stored_version},
+        entry_id=f"notify-behind-{stored_version}-id",
     )
     entry.add_to_hass(hass)
     with (

@@ -11,7 +11,7 @@ authors = [
 keywords = ["home-assistant", "energy", "custom-integration"]
 dependencies = [
     "homeassistant>=2025.6.3",
-    "dominion-sc-power==0.1.0",
+    "dominion-sc-power==0.2.0",
     "winfcntl>=1.1.9",
 ]
 

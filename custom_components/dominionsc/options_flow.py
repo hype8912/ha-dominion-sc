@@ -39,7 +39,7 @@ from typing import Any
 import voluptuous as vol
 from dominionsc.const import BIDGELY_PILOT_ID
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.statistics import statistics_during_period, StatisticsRow
+from homeassistant.components.recorder.statistics import StatisticsRow, statistics_during_period
 from homeassistant.config_entries import ConfigEntry, ConfigFlowResult, OptionsFlow
 from homeassistant.util import dt as dt_util
 
@@ -66,13 +66,15 @@ CONF_RECALCULATE_HISTORY = "recalculate_history"
 CONF_RECALC_START_DATE = "recalc_start_date"
 CONF_RECALC_END_DATE = "recalc_end_date"
 
-# Built once at module level so _cost_mode_label doesn't rebuild on every call.
+# Built once at module level so the *_cost_mode_label functions don't rebuild
+# their lookup dict on every call.
 _COST_MODE_LABELS: dict[str, str] = {}
+_GAS_COST_MODE_LABELS: dict[str, str] = {}
 
 
 def _cost_mode_label(mode: str) -> str:
     """
-    Return a human-readable label for a ``COST_MODE_*`` constant.
+    Return a human-readable label for an electric ``COST_MODE_*`` constant.
 
     Used to populate the ``description_placeholders`` in the
     ``recalculate_history`` form so the user can see which rate they are
@@ -89,6 +91,27 @@ def _cost_mode_label(mode: str) -> str:
     if not _COST_MODE_LABELS:
         _COST_MODE_LABELS.update(build_cost_mode_choices())
     return _COST_MODE_LABELS.get(mode, mode)
+
+
+def _gas_cost_mode_label(mode: str) -> str:
+    """
+    Return a human-readable label for a gas ``COST_MODE_*`` constant.
+
+    Analogous to :func:`_cost_mode_label` but for gas modes, whose labels
+    (e.g. "Rate 32V - Gas Residential Value Service") don't appear in
+    :func:`build_cost_mode_choices`'s electric-only mapping.
+
+    Args:
+        mode: A ``COST_MODE_*`` string constant (e.g. ``"rate_32v"``) or
+              ``COST_MODE_NONE``.
+
+    Returns:
+        The dropdown label for the mode, or the raw mode string as a fallback.
+
+    """
+    if not _GAS_COST_MODE_LABELS:
+        _GAS_COST_MODE_LABELS.update(build_gas_cost_mode_choices())
+    return _GAS_COST_MODE_LABELS.get(mode, mode)
 
 
 class DominionSCOptionsFlow(OptionsFlow):
@@ -246,10 +269,15 @@ class DominionSCOptionsFlow(OptionsFlow):
         """
         Step 3: Ask whether to recalculate historic cost records.
 
-        Shows a yes/no toggle pre-set to ``True`` when the cost mode has
-        changed (a changed rate almost always means old cost data is wrong).
-        The form description shows the old and new mode names so the user
-        understands what they are confirming.
+        Shows a yes/no toggle pre-set to ``True`` when either commodity's cost
+        mode has changed (a changed rate almost always means old cost data is
+        wrong). The form description shows the old and new mode names for
+        both electric and gas — considering only electric here would miss the
+        common case of a user turning on a gas rate plan while leaving their
+        electric mode untouched (see ``async_step_init``'s comment on
+        ``gas_mode_selected``): the checkbox would default unchecked and the
+        description would show identical "changing from X to X" text with no
+        mention of gas at all.
 
         - ``No``  -> saves options and ends the flow.
         - ``Yes`` -> continues to ``recalculate_date_range``.
@@ -262,7 +290,27 @@ class DominionSCOptionsFlow(OptionsFlow):
 
         old_mode: Any = self._config_entry.options.get(CONF_COST_MODE, COST_MODE_RATE_8)
         new_mode: Any = self._new_options.get(CONF_COST_MODE, COST_MODE_RATE_8)
-        mode_changed: Any = old_mode != new_mode
+        old_gas_mode: Any = self._config_entry.options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
+        new_gas_mode: Any = self._new_options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
+        electric_changed = old_mode != new_mode
+        gas_changed = old_gas_mode != new_gas_mode
+        mode_changed: Any = electric_changed or gas_changed
+
+        # Build the "changing from X to Y" summary as a single placeholder
+        # (rather than two static lines in the translation) so a gas-only
+        # change doesn't get silently dropped, and an electric-only change
+        # doesn't get padded with an irrelevant "gas: None to None" line.
+        changes: list[str] = []
+        if electric_changed or not gas_changed:
+            changes.append(
+                f"electric cost calculation method from **{_cost_mode_label(old_mode)}** to **{_cost_mode_label(new_mode)}**"
+            )
+        if gas_changed:
+            changes.append(
+                f"gas cost calculation method from **{_gas_cost_mode_label(old_gas_mode)}** "
+                f"to **{_gas_cost_mode_label(new_gas_mode)}**"
+            )
+        summary = "Your " + " and your ".join(changes) + "."
 
         return self.async_show_form(
             step_id="recalculate_history",
@@ -274,10 +322,7 @@ class DominionSCOptionsFlow(OptionsFlow):
                     ): bool,
                 }
             ),
-            description_placeholders={
-                "old_mode": _cost_mode_label(old_mode),
-                "new_mode": _cost_mode_label(new_mode),
-            },
+            description_placeholders={"summary": summary},
         )
 
     async def _async_earliest_consumption_date(self) -> date | None:
@@ -286,8 +331,8 @@ class DominionSCOptionsFlow(OptionsFlow):
         are being recalculated this flow.
 
         Used to default the date-range picker's start date to the full
-        available history, rather than an easy-to-under-scope "1st of this
-        month". That default previously caused a real bug: a user enabling a
+        available history, rather than a "1st of this month" default that is
+        easy to leave too narrow. That default previously caused a real bug: a user enabling a
         gas rate plan mid-cycle recalculated only the current billing
         cycle's few hours, silently leaving over a year of already-recorded
         gas consumption unpriced (see coordinator.py's

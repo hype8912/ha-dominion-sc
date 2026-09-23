@@ -135,7 +135,7 @@
       },
       "recalculate_history": {
         "title": "Recalculate Historic Costs?",
-        "description": "Your cost calculation method is changing from **{old_mode}** to **{new_mode}**.\n\nExisting cost statistics were calculated using the old method. Would you like to recalculate historic cost records to use the new method?\n\nNOTE:\n- If changing to a rate schedule, cost calculation may not be completely accurate as billing cycles must be estimated\n- Cost calculation will be limited to the effective date of the new rate schedule",
+        "description": "{summary}\n\nExisting cost statistics were calculated using the old method. Would you like to recalculate historic cost records to use the new method?\n\nNOTE:\n- If changing to a rate schedule, cost calculation may not be completely accurate as billing cycles must be estimated\n- Cost calculation will be limited to the effective date of the new rate schedule",
         "data": {
           "recalculate_history": "Recalculate historic cost statistics"
         },

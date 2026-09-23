@@ -250,9 +250,20 @@ tariff period for a plan (for example `RATE_8_2025` for 2025-07-23 through
 `cost._calculate_cost_for_wh()` calls `dominionsc.get_rate_plan_for_date()` with
 the plan's code and the interval's date, and prices the interval with whichever
 period is returned. Intervals before the earliest known period cost $0.
-Superseded periods carry only the usage charge, which is all this integration
-prices. To add a future tariff change, add the new plan and archive the old one
-in the library. This integration needs no code change beyond bumping the
+
+Every plan now has at least one superseded period. The earliest recorded period
+per plan:
+
+| Plan | Earliest period starts | Periods |
+|------|------------------------|---------|
+| Rate 1, 2, 6, 7, 8 | 2025-07-23 | 2025, current |
+| Rate 5 | 2024-09-01 | 2024, 2025 (from 2025-05-01), current |
+| Rate 32S, 32V | 2025-09-01 | 2025, current |
+
+Superseded periods carry the same charge structure as the current plan (basic
+facilities, DER, and usage/TOU/demand charges); this integration prices only
+the usage side. To add a future tariff change, add the new plan and archive the
+old one in the library. This integration needs no code change beyond bumping the
 library version (and `CURRENT_RATE_SCHEMA_VERSION`, see Section 9).
 
 ### 5.4 Register Discovery (Phase 5)
@@ -340,14 +351,14 @@ existing rows, which is why it has to handle **every** account that might
 need it, not just the one the user most recently touched. It didn't
 originally — it only recalculated ELECTRIC on the (once-true) assumption
 that gas had no cost statistic. Once gas cost modes were added, a user
-enabling a gas rate plan had no way to price consumption recorded before
-(or without) a priced cost — it silently stayed at $0.00 forever, since
-nothing else was ever going to reprice it. The fix, `_recalculate_one_account`
+enabling a gas rate plan had no way to price consumption that was recorded
+while no gas cost mode was active — it silently stayed at $0.00 forever,
+since nothing else was ever going to re-price it. The fix, `_recalculate_one_account`
 (Section 4), made the pricing logic account-agnostic and
 `_async_recalculate_historic_costs_locked` calls it once per account that
 has a non-`COST_MODE_NONE` mode in the new options — independently, so
 changing only gas (with electric untouched) still triggers a real
-recalculation instead of silently no-op'ing.
+recalculation instead of silently doing nothing.
 
 The options flow's `async_step_init` had a matching bug: it only offered the
 recalculate-history prompt based on the *electric* mode selection. A user
@@ -362,7 +373,7 @@ sensible default but silently limits recalculation to the current billing
 cycle. `_async_earliest_consumption_date()` now defaults it to the earliest
 recorded consumption for whichever account(s) are being recalculated
 (querying with `period="month"` so it's cheap even across a year-plus of
-history), so accepting the default reprices full history rather than a
+history), so accepting the default re-prices full history rather than a
 sliver of it. If you add a case where recalculation should be scoped
 differently, don't reintroduce a hardcoded start date without a strong
 reason — it's exactly the kind of thing that looks fine until someone's
@@ -388,7 +399,7 @@ because it is far more common for zeros to indicate missing data.
 Rate definitions live in the `dominion-sc-power` library, not in the
 integration. Both registries and the UI selectors are built from the library's
 residential catalogs, so a plan added there (with a `RatePlan.code` such as
-`rate_9`) appears in the selector automatically, labelled with its
+`rate_9`) appears in the selector automatically, labeled with its
 `RatePlan.name`. Optionally:
 
 - In `const.py`: add a `COST_MODE_*` constant (value equal to the library
@@ -579,9 +590,14 @@ existing users on the next HA restart.
 
 `CONF_LAST_RATE_SCHEMA_VERSION` is stored in `entry.data` and tracks which
 tariff values the user's statistics were last computed against. Increment
-`CURRENT_RATE_SCHEMA_VERSION` only when tariff rates change (not when new
-rates are added). Do not rename the key — renaming it would suppress the
-migration notification for existing users who need to recalculate.
+`CURRENT_RATE_SCHEMA_VERSION` whenever already-recorded intervals would now be
+priced differently than when they were written. That covers a correction to an
+existing rate and, as in the bump to `3`, the addition of *earlier* tariff
+periods — history that was stored at $0.00 (or at the wrong period's rates)
+becomes priceable. Adding only a new *future* period does not need a bump,
+since nothing already written changes. Do not rename the key — renaming it
+would suppress the migration notification for existing users who need to
+recalculate.
 
 ### `COST_MODE_*` rate values (`"rate_8"`, `"rate_6"`, `"rate_1"`, etc.)
 

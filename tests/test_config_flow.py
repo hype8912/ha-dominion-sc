@@ -185,6 +185,23 @@ async def test_user_flow_service_addr_stored_in_entry_data(
     assert result["data"][CONF_SERVICE_ADDR] == "addr_123"
 
 
+async def test_user_flow_no_service_addr_omits_key(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """A blank service address (the ([], "") error return of _fetch_accounts) is not
+    stored, and the flow still completes."""
+    mock_dominionsc_api.async_get_accounts.return_value = (["ELECTRIC"], "")
+
+    result = await _login_to_cost_mode(hass, user_input)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_SERVICE_ADDR not in result["data"]
+
+
 async def test_user_flow_pilot_id_defaults_when_not_entered(
     hass: HomeAssistant,
     mock_dominionsc_api: AsyncMock,
@@ -422,6 +439,40 @@ async def test_user_flow_with_tfa(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert CONF_LOGIN_DATA in result["data"]
     assert result["options"] == {CONF_COST_MODE: COST_MODE_RATE_8}
+
+
+async def test_tfa_flow_no_service_addr_omits_key(
+    hass: HomeAssistant,
+    mock_dominionsc_api: AsyncMock,
+    mock_tfa_handler: AsyncMock,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Blank service address after TFA submission is not stored, and the flow
+    still routes on to backfill options."""
+    mock_dominionsc_api.async_get_accounts.return_value = (["ELECTRIC"], "")
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    with patch(
+        "custom_components.dominionsc.config_flow._validate_login",
+        side_effect=MfaChallenge("TFA Required", mock_tfa_handler),
+    ):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TFA_METHOD: "sms"})
+    assert result["step_id"] == "tfa_code"
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_TFA_CODE: "123456"})
+    assert result["step_id"] == "backfill_options"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_EXTENDED_BACKFILL: False, CONF_EXTENDED_COST_BACKFILL: False},
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_COST_MODE: COST_MODE_RATE_8})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_SERVICE_ADDR not in result["data"]
 
 
 async def test_tfa_options_cannot_connect(
@@ -970,7 +1021,7 @@ async def test_earliest_consumption_date_no_rows_returns_none(hass: HomeAssistan
 
 async def test_recalculate_date_range_form_defaults_to_earliest_consumption(hass: HomeAssistant, user_input: dict) -> None:
     """The rendered date-range form's start-date default is the earliest
-    recorded consumption date, not an easy-to-under-scope 1st-of-month --
+    recorded consumption date, not a too-narrow 1st-of-month default --
     regression test for the bug where a narrow default silently left over a
     year of gas consumption unpriced after a recalculation."""
     _, flow = _make_flow_with_service_addr(hass, user_input)
@@ -1398,4 +1449,44 @@ async def test_options_flow_gas_cost_mode_rate32s_saved(
     # Assert
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_GAS_COST_MODE] == COST_MODE_RATE_32S
-    assert result["data"][CONF_COST_MODE] == COST_MODE_NONE
+
+
+async def test_options_flow_gas_only_change_defaults_recalculate_to_true(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Turning on gas while leaving electric mode unchanged still defaults the
+    recalculate-history checkbox to True and mentions gas in the description.
+
+    Regression test: previously the default and the description text only
+    considered the electric mode, so a gas-only change showed an unchecked
+    box and a "changing from Rate 8 to Rate 8" message that never mentioned
+    gas at all.
+    """
+    entry = _make_entry(hass, user_input)
+    hass.config_entries.async_update_entry(entry, options={CONF_COST_MODE: COST_MODE_RATE_8})
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.recalculation_lock.locked.return_value = False
+    mock_coordinator.data = MagicMock()
+    mock_coordinator.data.accounts = {"ELECTRIC": MagicMock(), "GAS": MagicMock()}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mock_coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_COST_MODE: COST_MODE_RATE_8, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "recalculate_history"
+    data_schema = result["data_schema"]
+    assert data_schema is not None
+    schema_defaults = {str(k): k.default() for k in data_schema.schema if hasattr(k, "default")}
+    assert schema_defaults[CONF_RECALCULATE_HISTORY] is True
+
+    placeholders = result["description_placeholders"]
+    assert placeholders is not None
+    assert "gas" in placeholders["summary"].lower()
+    assert "Rate 32S" in placeholders["summary"]

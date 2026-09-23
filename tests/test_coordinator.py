@@ -518,7 +518,7 @@ def test_cost_flat_rate2_calculates_correctly() -> None:
     """Rate 2 flat electric plan: 1000 Wh x $0.13111/kWh = $0.13111."""
     from custom_components.dominionsc.const import COST_MODE_RATE_2
 
-    # Rate 2 effective from 2026-07-01; interval is after that date.
+    # Interval is in Rate 2's current period (2026-07-01 onward).
     # FlatUsageCharge with $0.13111/kWh: cost = 1000 Wh / 1000 x $0.13111
     result = _calculate_cost_for_wh(1000, datetime(2026, 8, 1), 0, COST_MODE_RATE_2, 0, RATE_2)
     assert abs(result - 0.13111) < 1e-9
@@ -536,7 +536,7 @@ def test_cost_rate2_500wh() -> None:
 
 
 def test_cost_rate2_before_effective_date_returns_zero() -> None:
-    """Rate 2 interval before 2026-07-01 returns $0.0 (effective date gate)."""
+    """Rate 2 interval before the earliest recorded period (2025-07-23) returns $0.0."""
     from custom_components.dominionsc.const import COST_MODE_RATE_2
 
     result = _calculate_cost_for_wh(500, datetime(2025, 6, 1), 0, COST_MODE_RATE_2, 0, RATE_2)
@@ -632,13 +632,28 @@ def test_cost_for_wh_gas_rate_32s_dispatch() -> None:
 
 
 def test_cost_for_wh_gas_rate_32s_before_effective() -> None:
-    """Gas interval before rate effective date (2026-07-01) returns $0.0."""
+    """Gas interval before the earliest recorded 32S period (2025-09-01) returns $0.0."""
     from dominionsc import RATE_32S
 
     from custom_components.dominionsc.const import COST_MODE_RATE_32S
 
-    result = _calculate_cost_for_wh(100.0, datetime(2025, 9, 1), 0, COST_MODE_RATE_32S, 0, RATE_32S)
+    result = _calculate_cost_for_wh(100.0, datetime(2025, 8, 31), 0, COST_MODE_RATE_32S, 0, RATE_32S)
     assert result == 0.0
+
+
+def test_cost_for_wh_gas_rate_32s_uses_period_for_date() -> None:
+    """Each 32S tariff period prices the intervals that fall inside it."""
+    from dominionsc import RATE_32S
+
+    from custom_components.dominionsc.const import COST_MODE_RATE_32S
+
+    for when, expected in (
+        (datetime(2025, 9, 1), 1.81026),
+        (datetime(2026, 6, 30), 1.81026),
+        (datetime(2026, 7, 1), 2.04149),
+    ):
+        result = _calculate_cost_for_wh(100.0, when, 0, COST_MODE_RATE_32S, 0, RATE_32S)
+        assert abs(result - expected) < 1e-9, when
 
 
 def test_resolve_gas_cost_config_default_none() -> None:
@@ -1157,7 +1172,9 @@ async def test_update_statistics_empty_last_stat_returns_early(
     coordinator: DominionSCCoordinator,
 ) -> None:
     m = metadata()
-    await coordinator._update_statistics(m, {}, {}, {}, make_forecast(date.today() - timedelta(days=2)))
+    with patch.object(coordinator, "_process_and_insert_statistics", new=AsyncMock()) as process:
+        await coordinator._update_statistics(m, {}, {}, {}, make_forecast(date.today() - timedelta(days=2)))
+    process.assert_not_awaited()
 
 
 async def test_update_statistics_stale_stat_clamps_start_date(
@@ -1488,16 +1505,18 @@ async def test_process_cannot_connect_returns_early(
     m = metadata()
     forecast = make_forecast(date.today() - timedelta(days=10), date.today())
     coordinator.api.async_get_usage_reads = AsyncMock(side_effect=CannotConnect("down"))
-    await coordinator._process_and_insert_statistics(
-        m,
-        date.today() - timedelta(days=2),
-        date.today() - timedelta(days=1),
-        0,
-        0,
-        None,
-        {},
-        forecast,
-    )
+    with patch("custom_components.dominionsc.coordinator.async_add_external_statistics") as push:
+        await coordinator._process_and_insert_statistics(
+            m,
+            date.today() - timedelta(days=2),
+            date.today() - timedelta(days=1),
+            0,
+            0,
+            None,
+            {},
+            forecast,
+        )
+    push.assert_not_called()
 
 
 async def test_process_api_exception_returns_early(
@@ -1507,7 +1526,9 @@ async def test_process_api_exception_returns_early(
     when = datetime.now().replace(minute=0, second=0, microsecond=0)
     forecast = make_forecast(when.date(), when.date())
     coordinator.api.async_get_usage_reads = AsyncMock(side_effect=ApiException("bad", "url"))
-    await coordinator._process_and_insert_statistics(metadata(), when.date(), when.date(), 0, 0, None, {}, forecast)
+    with patch("custom_components.dominionsc.coordinator.async_add_external_statistics") as push:
+        await coordinator._process_and_insert_statistics(metadata(), when.date(), when.date(), 0, 0, None, {}, forecast)
+    push.assert_not_called()
 
 
 async def test_process_empty_reads_returns_early(
@@ -1517,16 +1538,18 @@ async def test_process_empty_reads_returns_early(
     m = metadata()
     forecast = make_forecast(date.today() - timedelta(days=10), date.today())
     coordinator.api.async_get_usage_reads = AsyncMock(return_value=[])
-    await coordinator._process_and_insert_statistics(
-        m,
-        date.today() - timedelta(days=2),
-        date.today() - timedelta(days=1),
-        0,
-        0,
-        None,
-        {},
-        forecast,
-    )
+    with patch("custom_components.dominionsc.coordinator.async_add_external_statistics") as push:
+        await coordinator._process_and_insert_statistics(
+            m,
+            date.today() - timedelta(days=2),
+            date.today() - timedelta(days=1),
+            0,
+            0,
+            None,
+            {},
+            forecast,
+        )
+    push.assert_not_called()
 
 
 async def test_process_empty_reads_with_last_stat_dt_updates_changed(
@@ -1774,7 +1797,9 @@ def test_push_cost_statistics(coordinator: DominionSCCoordinator) -> None:
 
 async def test_recalculate_none_mode_skips(coordinator: DominionSCCoordinator) -> None:
     start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
-    await coordinator._async_recalculate_historic_costs_locked(start, end, {CONF_COST_MODE: COST_MODE_NONE})
+    with patch.object(coordinator, "_recalculate_one_account", new=AsyncMock()) as one:
+        await coordinator._async_recalculate_historic_costs_locked(start, end, {CONF_COST_MODE: COST_MODE_NONE})
+    one.assert_not_awaited()
 
 
 async def test_recalculate_no_electric_account_skips(
@@ -1783,23 +1808,34 @@ async def test_recalculate_no_electric_account_skips(
     start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
     coordinator.api.async_get_accounts = AsyncMock(return_value=({"GAS"}, "address"))
     coordinator.api.get_timezone = MagicMock(return_value="UTC")
-    await coordinator._async_recalculate_historic_costs_locked(
-        start, end, {CONF_COST_MODE: COST_MODE_FIXED, CONF_FIXED_RATE: 0.2}
-    )
+    with patch.object(coordinator, "_recalculate_one_account", new=AsyncMock()) as one:
+        await coordinator._async_recalculate_historic_costs_locked(
+            start, end, {CONF_COST_MODE: COST_MODE_FIXED, CONF_FIXED_RATE: 0.2}
+        )
+    one.assert_not_awaited()
 
 
 async def test_recalculate_no_consumption_rows_warns(
     coordinator: DominionSCCoordinator,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import logging
+
     start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
     coordinator.api.get_timezone = MagicMock(return_value="UTC")
     coordinator.api.async_get_accounts = AsyncMock(return_value=({"ELECTRIC"}, "address"))
     recorder = MagicMock()
     recorder.async_add_executor_job = AsyncMock(return_value={})
-    with patch("custom_components.dominionsc.coordinator.get_instance", return_value=recorder):
+    with (
+        patch("custom_components.dominionsc.coordinator.get_instance", return_value=recorder),
+        patch("custom_components.dominionsc.coordinator.async_add_external_statistics") as push,
+        caplog.at_level(logging.WARNING, logger="custom_components.dominionsc.coordinator"),
+    ):
         await coordinator._async_recalculate_historic_costs_locked(
             start, end, {CONF_COST_MODE: COST_MODE_FIXED, CONF_FIXED_RATE: 0.2}
         )
+    assert "No ELECTRIC consumption data" in caplog.text
+    push.assert_not_called()
 
 
 async def test_recalculate_fixed_success(coordinator: DominionSCCoordinator) -> None:
@@ -2004,11 +2040,13 @@ async def test_recalculate_gas_no_gas_account_skips(
     start, end = date.today() - timedelta(days=2), date.today() - timedelta(days=1)
     coordinator.api.get_timezone = MagicMock(return_value="UTC")
     coordinator.api.async_get_accounts = AsyncMock(return_value=({"ELECTRIC"}, "123 Main"))
-    await coordinator._async_recalculate_historic_costs_locked(
-        start,
-        end,
-        {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
-    )
+    with patch.object(coordinator, "_recalculate_one_account", new=AsyncMock()) as one:
+        await coordinator._async_recalculate_historic_costs_locked(
+            start,
+            end,
+            {CONF_COST_MODE: COST_MODE_NONE, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+        )
+    one.assert_not_awaited()
 
 
 async def test_recalculate_gas_success(coordinator: DominionSCCoordinator) -> None:

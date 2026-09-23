@@ -1,6 +1,7 @@
 """Tests for dominionsc rates adapter."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from dominionsc import (
@@ -130,6 +131,7 @@ def test_registries_mirror_library_catalogs() -> None:
 _PRIOR_PERIOD_RATES = [
     (COST_MODE_RATE_8, RATE_8, 0.14599, 0.15983, 0.14599, 0.14045),
     (COST_MODE_RATE_6, RATE_6, 0.14164, 0.15505, 0.14164, 0.13628),
+    (COST_MODE_RATE_1, RATE_1, 0.14164, 0.15505, 0.14164, 0.13628),
 ]
 
 
@@ -151,11 +153,77 @@ def test_cost_engine_prices_prior_period_from_library_history(
     assert straddle == pytest.approx((40 * s_under + 60 * s_over) / 1000)
 
 
-@pytest.mark.parametrize(("mode", "plan"), [(COST_MODE_RATE_8, RATE_8), (COST_MODE_RATE_6, RATE_6)])
-def test_cost_engine_period_boundaries(mode: str, plan: RatePlan) -> None:
-    """Cost is zero before the earliest period and switches to current rates on 2026-07-01."""
-    assert _calculate_cost_for_wh(100, datetime(2025, 7, 22), 0, mode, 0, plan) == 0.0
-    assert _calculate_cost_for_wh(100, datetime(2025, 7, 23), 0, mode, 0, plan) > 0.0
+# (cost mode, current plan, prior $/kWh) for the flat electric plan's
+# 2025-07-23..2026-06-30 tariff period.
+_PRIOR_PERIOD_FLAT_RATES = [
+    (COST_MODE_RATE_2, RATE_2, 0.12445),
+]
+
+# (cost mode, current plan, prior $/therm) for the gas plans'
+# 2025-09-01..2026-06-30 tariff period.
+_PRIOR_PERIOD_GAS_RATES = [
+    (COST_MODE_RATE_32S, RATE_32S, 1.81026),
+    (COST_MODE_RATE_32V, RATE_32V, 1.71886),
+]
+
+# (cost mode, current plan, interval date, on-peak/off-peak/super-off-peak $/kWh)
+# for each superseded TOU period. Rate 5 has two.
+_PRIOR_PERIOD_TOU_RATES = [
+    (COST_MODE_RATE_5, RATE_5, datetime(2024, 9, 15), 0.26139, 0.12940, 0.08303),
+    (COST_MODE_RATE_5, RATE_5, datetime(2025, 8, 15), 0.26900, 0.13701, 0.09064),
+    (COST_MODE_RATE_7, RATE_7, datetime(2025, 8, 15), 0.15983, 0.09161, 0.08372),
+]
+
+# Earliest tariff period the library records per plan. Intervals before it cost $0.
+_EARLIEST_PERIOD_START = [
+    (COST_MODE_RATE_8, RATE_8, datetime(2025, 7, 23)),
+    (COST_MODE_RATE_6, RATE_6, datetime(2025, 7, 23)),
+    (COST_MODE_RATE_1, RATE_1, datetime(2025, 7, 23)),
+    (COST_MODE_RATE_2, RATE_2, datetime(2025, 7, 23)),
+    (COST_MODE_RATE_7, RATE_7, datetime(2025, 7, 23)),
+    (COST_MODE_RATE_5, RATE_5, datetime(2024, 9, 1)),
+    (COST_MODE_RATE_32S, RATE_32S, datetime(2025, 9, 1)),
+    (COST_MODE_RATE_32V, RATE_32V, datetime(2025, 9, 1)),
+]
+
+
+@pytest.mark.parametrize(("mode", "plan", "prior_rate"), _PRIOR_PERIOD_FLAT_RATES)
+def test_cost_engine_prices_prior_flat_period(mode: str, plan: RatePlan, prior_rate: float) -> None:
+    """Flat electric intervals in the superseded period use the archived price."""
+    result = _calculate_cost_for_wh(1000, datetime(2025, 8, 15), 0, mode, 0, plan)
+    assert result == pytest.approx(1000 * prior_rate / 1000)
+
+
+@pytest.mark.parametrize(("mode", "plan", "prior_rate"), _PRIOR_PERIOD_GAS_RATES)
+def test_cost_engine_prices_prior_gas_period(mode: str, plan: RatePlan, prior_rate: float) -> None:
+    """Gas intervals in the superseded period use the archived price (100 ft³ = 1 therm)."""
+    result = _calculate_cost_for_wh(100.0, datetime(2025, 10, 15), 0, mode, 0, plan)
+    assert result == pytest.approx(prior_rate)
+
+
+@pytest.mark.parametrize(("mode", "plan", "when", "on_peak", "off_peak", "super_off"), _PRIOR_PERIOD_TOU_RATES)
+def test_cost_engine_prices_prior_tou_period(
+    mode: str, plan: RatePlan, when: datetime, on_peak: float, off_peak: float, super_off: float
+) -> None:
+    """Each superseded TOU period prices its own on/off/super-off-peak hours."""
+    et = ZoneInfo("America/New_York")
+    # Summer windows: on-peak 4-8 PM, super-off-peak 1-5 AM, everything else off-peak.
+    for hour, expected in ((17, on_peak), (10, off_peak), (2, super_off)):
+        dt = when.replace(hour=hour, tzinfo=et)
+        assert _calculate_cost_for_wh(1000, dt, 0, mode, 0, plan) == pytest.approx(expected), (mode, hour)
+
+
+@pytest.mark.parametrize(("mode", "plan", "earliest"), _EARLIEST_PERIOD_START)
+def test_cost_engine_zero_before_earliest_period(mode: str, plan: RatePlan, earliest: datetime) -> None:
+    """Cost is zero the day before the earliest recorded period and non-zero on it."""
+    assert _calculate_cost_for_wh(100, earliest - timedelta(days=1), 0, mode, 0, plan) == 0.0
+    assert _calculate_cost_for_wh(100, earliest, 0, mode, 0, plan) > 0.0
+
+
+@pytest.mark.parametrize(("mode", "plan", "earliest"), _EARLIEST_PERIOD_START)
+def test_cost_engine_period_boundaries(mode: str, plan: RatePlan, earliest: datetime) -> None:
+    """Every plan switches off its superseded rates on 2026-07-01."""
+    assert earliest < datetime(2026, 6, 30)
     prior = _calculate_cost_for_wh(100, datetime(2026, 6, 30), 0, mode, 0, plan)
     current = _calculate_cost_for_wh(100, datetime(2026, 7, 1), 0, mode, 0, plan)
     assert prior != current

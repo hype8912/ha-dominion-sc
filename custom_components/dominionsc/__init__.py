@@ -100,9 +100,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: DominionSCConfigEntry) -
         persistent_notification.async_create(
             hass,
             (
-                "Dominion Energy SC rate values changed on 2026-07-01. "
-                "Cost statistics from 2025-07-23 to 2026-06-30 were calculated "
-                "at old tariff rates. "
+                "Dominion Energy SC rate information has been updated. Every "
+                "rate schedule now includes its earlier tariff periods, so "
+                "historical cost statistics that were previously priced at old "
+                "rates — or left at $0.00 because no rates were known for that "
+                "date — can now be priced correctly. "
                 "Go to **Settings → Devices & Services → Dominion Energy SC → "
                 "Configure** and select *Recalculate History* to update "
                 "historical cost data."

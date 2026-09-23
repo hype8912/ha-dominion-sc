@@ -30,6 +30,7 @@ from custom_components.dominionsc.const import (
     CONF_SERVICE_ADDR,
     COST_MODE_FIXED,
     COST_MODE_NONE,
+    COST_MODE_RATE_5,
     COST_MODE_RATE_6,
     COST_MODE_RATE_8,
     COST_MODE_RATE_32S,
@@ -1490,3 +1491,108 @@ async def test_options_flow_gas_only_change_defaults_recalculate_to_true(
     assert placeholders is not None
     assert "gas" in placeholders["summary"].lower()
     assert "Rate 32S" in placeholders["summary"]
+
+
+async def test_options_flow_no_change_summary_is_accurate(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """Re-submitting the same modes (the post-rate-update recalculation case)
+    must not claim a change, and must name both commodities.
+
+    Regression test: the summary previously read "Your electric cost calculation
+    method from Rate 5 to Rate 5." — no verb, a change that wasn't happening, and
+    no mention of gas even though gas gets re-priced too.
+    """
+    entry = _make_entry(hass, user_input)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={CONF_COST_MODE: COST_MODE_RATE_5, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.recalculation_lock.locked.return_value = False
+    mock_coordinator.data = MagicMock()
+    mock_coordinator.data.accounts = {"ELECTRIC": MagicMock(), "GAS": MagicMock()}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mock_coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_COST_MODE: COST_MODE_RATE_5, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    assert result["step_id"] == "recalculate_history"
+    placeholders = result["description_placeholders"]
+    assert placeholders is not None
+    summary = placeholders["summary"]
+
+    # Must not assert a transition — "is changing from X to X" was the bug.
+    assert "is changing from" not in summary
+    assert "Nothing is changing" in summary
+    assert "Rate 5" in summary
+    assert "Rate 32S" in summary
+    # No dangling "Your ." fragment from an empty clause list.
+    assert "Your ." not in summary
+
+
+async def test_options_flow_electric_change_names_unchanged_gas(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """An electric-only change still names the unchanged gas plan, because gas
+    is re-priced by the same recalculation."""
+    entry = _make_entry(hass, user_input)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={CONF_COST_MODE: COST_MODE_RATE_8, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.recalculation_lock.locked.return_value = False
+    mock_coordinator.data = MagicMock()
+    mock_coordinator.data.accounts = {"ELECTRIC": MagicMock(), "GAS": MagicMock()}
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = mock_coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_COST_MODE: COST_MODE_RATE_6, CONF_GAS_COST_MODE: COST_MODE_RATE_32S},
+    )
+
+    assert result["step_id"] == "recalculate_history"
+    placeholders = result["description_placeholders"]
+    assert placeholders is not None
+    summary = placeholders["summary"]
+
+    assert "is changing from" in summary
+    assert "Rate 8" in summary
+    assert "Rate 6" in summary
+    # Gas is unchanged but still re-priced, so it must be named.
+    assert "Rate 32S" in summary
+
+
+async def test_options_flow_fixed_rate_summary_not_empty(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    user_input: dict,
+) -> None:
+    """COST_MODE_FIXED routes through recalculate_history too; its summary must
+    still name the electric method rather than rendering an empty clause."""
+    entry = _make_entry(hass, user_input)
+    hass.config_entries.async_update_entry(entry, options={CONF_COST_MODE: COST_MODE_FIXED, CONF_FIXED_RATE: 0.15})
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_COST_MODE: COST_MODE_FIXED})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_FIXED_RATE: 0.15})
+
+    assert result["step_id"] == "recalculate_history"
+    placeholders = result["description_placeholders"]
+    assert placeholders is not None
+    summary = placeholders["summary"]
+
+    assert summary.strip()
+    assert "Your ." not in summary
+    assert "**" in summary

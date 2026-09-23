@@ -296,21 +296,54 @@ class DominionSCOptionsFlow(OptionsFlow):
         gas_changed = old_gas_mode != new_gas_mode
         mode_changed: Any = electric_changed or gas_changed
 
-        # Build the "changing from X to Y" summary as a single placeholder
-        # (rather than two static lines in the translation) so a gas-only
-        # change doesn't get silently dropped, and an electric-only change
-        # doesn't get padded with an irrelevant "gas: None to None" line.
+        # Build the summary as a single placeholder (rather than static lines in
+        # the translation) so a gas-only change doesn't get silently dropped, and
+        # an electric-only change doesn't get padded with an irrelevant
+        # "gas: None to None" line.
+        #
+        # This step is also reached when nothing changed at all — the user can
+        # open the options flow purely to re-price history after a rate update
+        # (see CURRENT_RATE_SCHEMA_VERSION in const.py). Claiming a change in
+        # that case produced a nonsensical "changing from Rate 5 to Rate 5", so
+        # changed and unchanged commodities are worded separately. Recalculation
+        # covers every commodity with a priced mode, changed or not (see
+        # coordinator._async_recalculate_historic_costs_locked), so an unchanged
+        # commodity still has to be named here.
         changes: list[str] = []
-        if electric_changed or not gas_changed:
+        unchanged: list[str] = []
+
+        if electric_changed:
             changes.append(
-                f"electric cost calculation method from **{_cost_mode_label(old_mode)}** to **{_cost_mode_label(new_mode)}**"
+                f"electric cost calculation method is changing from **{_cost_mode_label(old_mode)}** "
+                f"to **{_cost_mode_label(new_mode)}**"
             )
+        elif new_mode != COST_MODE_NONE:
+            # Includes COST_MODE_FIXED, which also routes through this step.
+            unchanged.append(f"electric cost calculation method is **{_cost_mode_label(new_mode)}**")
+
         if gas_changed:
             changes.append(
-                f"gas cost calculation method from **{_gas_cost_mode_label(old_gas_mode)}** "
+                f"gas cost calculation method is changing from **{_gas_cost_mode_label(old_gas_mode)}** "
                 f"to **{_gas_cost_mode_label(new_gas_mode)}**"
             )
-        summary = "Your " + " and your ".join(changes) + "."
+        elif new_gas_mode != COST_MODE_NONE:
+            unchanged.append(f"gas cost calculation method is **{_gas_cost_mode_label(new_gas_mode)}**")
+
+        if changes:
+            summary = "Your " + " and your ".join(changes) + "."
+            if unchanged:
+                summary += " Your " + " and your ".join(unchanged) + ", which will be re-priced with the latest rates too."
+        elif unchanged:
+            summary = (
+                "Your "
+                + " and your ".join(unchanged)
+                + ". Nothing is changing, but rate information has been updated, so recalculating re-prices "
+                "your history with the latest rates."
+            )
+        else:
+            # Defensive: async_step_init only routes here when at least one
+            # commodity has a priced mode, so this should be unreachable.
+            summary = "Recalculating re-prices your history with the latest rates."
 
         return self.async_show_form(
             step_id="recalculate_history",

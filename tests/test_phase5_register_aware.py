@@ -57,9 +57,7 @@ class TestBuildRegisterStatisticIds:
         guarantee. (Template objects compare by identity, not value, so
         compare ids directly and the template *string*.)
         """
-        legacy_id, legacy_cost, legacy_name = _build_statistic_ids(
-            "123 Main St", "ELECTRIC"
-        )
+        legacy_id, legacy_cost, legacy_name = _build_statistic_ids("123 Main St", "ELECTRIC")
         reg_id, reg_cost, reg_name = _build_register_statistic_ids(
             "123 Main St", "ELECTRIC", usage_point_id="unused", is_sole_register=True
         )
@@ -112,9 +110,7 @@ class TestBuildRegisterStatisticIds:
 
     def test_multi_register_gas_cost_id_generated(self) -> None:
         """GAS accounts now get a cost_id; coordinator nullifies it when no gas mode active."""
-        _, cost_id, _ = _build_register_statistic_ids(
-            "123 Main St", "GAS", usage_point_id="ABC123", is_sole_register=False
-        )
+        _, cost_id, _ = _build_register_statistic_ids("123 Main St", "GAS", usage_point_id="ABC123", is_sole_register=False)
         # Phase 4: gas cost IDs are generated so gas cost stats can be written.
         assert cost_id == "dominionsc:123_main_st_gas_abc123_energy_cost"
 
@@ -167,13 +163,9 @@ class TestStatisticIdRegressionGuarantee:
             ("O'Brien Ave", "GAS"),
         ],
     )
-    def test_sole_register_ids_unchanged_across_addresses(
-        self, address: str, account: str
-    ) -> None:
+    def test_sole_register_ids_unchanged_across_addresses(self, address: str, account: str) -> None:
         legacy_id, legacy_cost, legacy_name = _build_statistic_ids(address, account)
-        reg_id, reg_cost, reg_name = _build_register_statistic_ids(
-            address, account, usage_point_id="", is_sole_register=True
-        )
+        reg_id, reg_cost, reg_name = _build_register_statistic_ids(address, account, usage_point_id="", is_sole_register=True)
         assert reg_id == legacy_id
         assert reg_cost == legacy_cost
         assert reg_name.template == legacy_name.template
@@ -191,9 +183,7 @@ class TestStatisticIdRegressionGuarantee:
         coord = DominionSCCoordinator(hass, mock_config_entry)
         coord.api = MagicMock()
         coord.api.async_get_register_reads = AsyncMock(
-            side_effect=AssertionError(
-                "discovery must not be called for an established install"
-            )
+            side_effect=AssertionError("discovery must not be called for an established install")
         )
         forecast_mock = MagicMock()
         forecast_mock.start_date = date(2025, 7, 1)
@@ -202,9 +192,7 @@ class TestStatisticIdRegressionGuarantee:
         legacy_id, _, _ = _build_statistic_ids("123 Main", "ELECTRIC")
         recorder = MagicMock()
         # The legacy id already has a recorded statistic -> established install.
-        recorder.async_add_executor_job = AsyncMock(
-            return_value={legacy_id: [{"start": 0, "sum": 100}]}
-        )
+        recorder.async_add_executor_job = AsyncMock(return_value={legacy_id: [{"start": 0, "sum": 100}]})
 
         with (
             patch.object(coord, "_update_statistics", new=AsyncMock()),
@@ -227,18 +215,14 @@ class TestStatisticIdRegressionGuarantee:
 class TestDiscoverRegisters:
     """Tests for the register-discovery call and its failure fallback."""
 
-    async def _make_coordinator(
-        self, hass: HomeAssistant, mock_config_entry: MockConfigEntry
-    ) -> DominionSCCoordinator:
+    async def _make_coordinator(self, hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> DominionSCCoordinator:
         mock_config_entry.add_to_hass(hass)
         coord = DominionSCCoordinator(hass, mock_config_entry)
         coord.api = MagicMock()
         coord.api.get_timezone = MagicMock(return_value="America/New_York")
         return coord
 
-    async def test_returns_registers_on_success(
-        self, hass: HomeAssistant, mock_config_entry: MockConfigEntry
-    ) -> None:
+    async def test_returns_registers_on_success(self, hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> None:
         coord = await self._make_coordinator(hass, mock_config_entry)
         registers = [
             RegisterReads(usage_point_id="A", reads=[]),
@@ -250,29 +234,21 @@ class TestDiscoverRegisters:
 
         assert result == registers
 
-    async def test_cannot_connect_falls_back_to_empty(
-        self, hass: HomeAssistant, mock_config_entry: MockConfigEntry
-    ) -> None:
+    async def test_cannot_connect_falls_back_to_empty(self, hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> None:
         from dominionsc.exceptions import CannotConnect
 
         coord = await self._make_coordinator(hass, mock_config_entry)
-        coord.api.async_get_register_reads = AsyncMock(
-            side_effect=CannotConnect("down")
-        )
+        coord.api.async_get_register_reads = AsyncMock(side_effect=CannotConnect("down"))
 
         result = await coord._discover_registers("ELECTRIC")
 
         assert result == []
 
-    async def test_api_exception_falls_back_to_empty(
-        self, hass: HomeAssistant, mock_config_entry: MockConfigEntry
-    ) -> None:
+    async def test_api_exception_falls_back_to_empty(self, hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> None:
         from dominionsc.exceptions import ApiException
 
         coord = await self._make_coordinator(hass, mock_config_entry)
-        coord.api.async_get_register_reads = AsyncMock(
-            side_effect=ApiException("bad response", "https://example.test")
-        )
+        coord.api.async_get_register_reads = AsyncMock(side_effect=ApiException("bad response", "https://example.test"))
 
         result = await coord._discover_registers("ELECTRIC")
 
@@ -396,18 +372,14 @@ class TestProcessAndInsertStatisticsRegisterFetch:
             usage_point_id=usage_point_id,
         )
 
-    async def _make_coordinator(
-        self, hass: HomeAssistant, mock_config_entry: MockConfigEntry
-    ) -> DominionSCCoordinator:
+    async def _make_coordinator(self, hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> DominionSCCoordinator:
         mock_config_entry.add_to_hass(hass)
         coord = DominionSCCoordinator(hass, mock_config_entry)
         coord.api = MagicMock()
         coord.api.get_timezone = MagicMock(return_value="America/New_York")
         return coord
 
-    async def test_sole_register_uses_flat_fetch(
-        self, hass: HomeAssistant, mock_config_entry: MockConfigEntry
-    ) -> None:
+    async def test_sole_register_uses_flat_fetch(self, hass: HomeAssistant, mock_config_entry: MockConfigEntry) -> None:
         """usage_point_id=None must call the flat async_get_usage_reads, not
         async_get_register_reads -- the legacy path is untouched."""
         coord = await self._make_coordinator(hass, mock_config_entry)
@@ -436,9 +408,7 @@ class TestProcessAndInsertStatisticsRegisterFetch:
         """A specific usage_point_id must fetch via async_get_register_reads
         and use only that register's reads, ignoring other registers'."""
         coord = await self._make_coordinator(hass, mock_config_entry)
-        coord.api.async_get_usage_reads = AsyncMock(
-            side_effect=AssertionError("must not be called for register-aware metadata")
-        )
+        coord.api.async_get_usage_reads = AsyncMock(side_effect=AssertionError("must not be called for register-aware metadata"))
         target_read = UsageRead(
             start_time=MagicMock(date=MagicMock(return_value=date(2025, 7, 1))),
             end_time=MagicMock(),
@@ -480,9 +450,7 @@ class TestProcessAndInsertStatisticsRegisterFetch:
         newly-discovered register with no data yet) must not raise -- it
         yields an empty read list, handled by the existing no-data path."""
         coord = await self._make_coordinator(hass, mock_config_entry)
-        coord.api.async_get_register_reads = AsyncMock(
-            return_value=[RegisterReads(usage_point_id="SOME_OTHER_UP", reads=[])]
-        )
+        coord.api.async_get_register_reads = AsyncMock(return_value=[RegisterReads(usage_point_id="SOME_OTHER_UP", reads=[])])
         last_changed: dict = {}
 
         await coord._process_and_insert_statistics(

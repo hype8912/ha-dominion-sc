@@ -33,7 +33,7 @@ def pytest_runtest_setup() -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_recorder(hass: HomeAssistant) -> None:
+def mock_recorder(hass: HomeAssistant) -> Generator[None]:
     """
     Automatically mock recorder for all tests.
 
@@ -67,21 +67,17 @@ def expected_lingering_timers() -> bool:
 @pytest.fixture
 def mock_setup_entry() -> Generator[AsyncMock]:
     """Override async_setup_entry."""
-    with patch(
-        "custom_components.dominionsc.async_setup_entry", return_value=True
-    ) as mock_setup_entry:
+    with patch("custom_components.dominionsc.async_setup_entry", return_value=True) as mock_setup_entry:
         yield mock_setup_entry
 
 
 @pytest.fixture
-def mock_dominionsc_api() -> MagicMock:
+def mock_dominionsc_api() -> Generator[MagicMock]:
     """Mock DominionSC API client."""
     with patch("custom_components.dominionsc.config_flow.DominionSC") as mock_api:
         api_instance = MagicMock()
         api_instance.async_login = AsyncMock()
-        api_instance.async_get_accounts = AsyncMock(
-            return_value=(["ELECTRIC"], "addr_123")
-        )
+        api_instance.async_get_accounts = AsyncMock(return_value=(["ELECTRIC"], "addr_123"))
         mock_api.return_value = api_instance
         yield api_instance
 
@@ -90,9 +86,7 @@ def mock_dominionsc_api() -> MagicMock:
 def mock_tfa_handler() -> MagicMock:
     """Mock TFA handler."""
     handler = MagicMock()
-    handler.async_get_tfa_options = AsyncMock(
-        return_value={"sms": "sms", "email": "email"}
-    )
+    handler.async_get_tfa_options = AsyncMock(return_value={"sms": "sms", "email": "email"})
     handler.async_select_tfa_option = AsyncMock()
     handler.async_submit_tfa_code = AsyncMock(return_value={"tfa_token": "test"})
     return handler

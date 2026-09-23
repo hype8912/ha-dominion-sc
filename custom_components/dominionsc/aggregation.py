@@ -13,7 +13,7 @@ The function is a **pure function** — no Home Assistant dependency, no recorde
 calls, no coordinator ``self``. Every input it needs is passed explicitly. This
 makes it straightforward to unit-test with synthetic data.
 
-Key behaviours
+Key behaviors
 --------------
 **Tiered-rate billing-cycle tracking**
     For Rate 8 and Rate 6 the tier resets at each billing-cycle boundary. The
@@ -131,6 +131,7 @@ def aggregate_hourly_data(
     # Pre-compute billing cycles once (only for tiered rates).
     billing_cycles: list[tuple[date, date]] = []
     if is_tiered_rate:
+        assert forecast is not None  # documented requirement for tiered rates
         today = date.today()
         billing_cycles = _estimate_billing_cycles(
             anchor_start=forecast.start_date,
@@ -190,7 +191,7 @@ def aggregate_hourly_data(
         # rate mode; _calculate_cost_for_wh handles the ft³ → therm conversion
         # inside _calculate_flat_cost based on rate_plan.commodity.
         if metadata.cost_id:
-            # Honour the cost_start_date gate: when consumption is backfilled
+            # Honor the cost_start_date gate: when consumption is backfilled
             # further than cost (user only enabled one of the two extended
             # backfill options), skip cost rows for the early window.
             if cost_start_date is not None and interval_date < cost_start_date:

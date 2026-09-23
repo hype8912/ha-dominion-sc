@@ -44,7 +44,7 @@ include = ["custom_components"]
 
 [tool.ruff]
 target-version = "py313"
-line-length = 88
+line-length = 130
 
 [tool.ruff.lint]
 select = [
@@ -104,7 +104,7 @@ max-complexity = 25
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."] 
+pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

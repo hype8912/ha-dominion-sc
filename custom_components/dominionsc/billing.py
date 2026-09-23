@@ -151,9 +151,7 @@ def _estimate_billing_cycles(
     starts.reverse()
 
     # --- Build (start, end) pairs; each cycle ends the day before the next starts ---
-    cycles = [
-        (starts[i], starts[i + 1] - timedelta(days=1)) for i in range(len(starts) - 1)
-    ]
+    cycles = [(starts[i], starts[i + 1] - timedelta(days=1)) for i in range(len(starts) - 1)]
     # Append the anchor itself (its end date comes from the API, not estimation).
     cycles.append((anchor_start, anchor_end))
 

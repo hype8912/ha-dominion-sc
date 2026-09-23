@@ -15,10 +15,10 @@ Initial setup flow (step IDs)
                                                                         |
     backfill_options -----------------------------------------------> cost_mode
                                                                         |
-    cost_mode --> "rate_8" / "rate_5" / etc. / "none" --------> gas_cost_mode (if GAS) --> CREATE ENTRY
-              |                                               +-> CREATE ENTRY (no GAS)
-              +-- "fixed" --> cost_mode_fixed_rate -----------> gas_cost_mode (if GAS) --> CREATE ENTRY
-                                                            +-> CREATE ENTRY (no GAS)
+    cost_mode --> "rate_8" / "rate_5" / etc. / "none" --> gas_cost_mode (if GAS) -> ENTRY
+              |                                         +-> CREATE ENTRY (no GAS)
+              +-- "fixed" --> cost_mode_fixed_rate ---> gas_cost_mode (if GAS) --> ENTRY
+                                                     +-> CREATE ENTRY (no GAS)
 
 Re-authentication flow
 -----------------------
@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import voluptuous as vol
 from dominionsc import (
@@ -154,6 +154,7 @@ async def _fetch_accounts(
     Returns:
         Tuple of (list of account type strings, service address string).
         Both are empty on error.
+
     """
     try:
         api = DominionSC(
@@ -164,7 +165,9 @@ async def _fetch_accounts(
             pilot_id=data.get(CONF_PILOT_ID),
         )
         await api.async_login()
-        accounts, service_addr = await api.async_get_accounts()
+        # The library annotates this as ``list[list[str] | str]``; it is really a
+        # ``[accounts, service_addr]`` pair.
+        accounts, service_addr = cast("tuple[list[str], str]", await api.async_get_accounts())
         return list(accounts), service_addr
     except (CannotConnect, ApiException, InvalidAuth):
         return [], ""
@@ -191,7 +194,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialise flow state for a new config-flow session."""
+        """Initialize flow state for a new config-flow session."""
         # Accumulates credentials (username, password, login_data).
         # Written to entry.data at the end of the flow.
         self._data: dict[str, Any] = {}
@@ -217,9 +220,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         return DominionSCOptionsFlow(config_entry)
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 1: Collect username and password.
 
@@ -272,15 +273,11 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(schema_dict), user_input
-            ),
+            data_schema=self.add_suggested_values_to_schema(vol.Schema(schema_dict), user_input),
             errors=errors,
         )
 
-    async def async_step_tfa_options(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_tfa_options(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 2a: Let user select how to receive the TFA code.
 
@@ -302,16 +299,14 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except ApiException as err:
-                _LOGGER.error(
-                    "API structure error during TFA option selection: %s", err
-                )
+                _LOGGER.error("API structure error during TFA option selection: %s", err)
                 errors["base"] = "unknown"
             else:
                 return await self.async_step_tfa_code()
 
         _LOGGER.debug("API: async_get_tfa_options")
         try:
-            tfa_options = await self.tfa_handler.async_get_tfa_options()
+            tfa_options: dict[str, str] = await self.tfa_handler.async_get_tfa_options()
         except ApiException as err:
             _LOGGER.error("API structure error getting TFA options: %s", err)
             errors["base"] = "unknown"
@@ -335,9 +330,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_tfa_code(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_tfa_code(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 2b: Collect the TFA code entered by the user.
 
@@ -353,10 +346,10 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self.tfa_handler is not None
         errors: dict[str, str] = {}
         if user_input is not None:
-            code = user_input[CONF_TFA_CODE]
+            code: Any = user_input[CONF_TFA_CODE]
             try:
                 _LOGGER.debug("API: async_submit_tfa_code")
-                login_data = await self.tfa_handler.async_submit_tfa_code(code)
+                login_data: dict[str, str] = await self.tfa_handler.async_submit_tfa_code(code)
             except InvalidAuth:
                 errors["base"] = "invalid_tfa_code"
             except CannotConnect:
@@ -374,22 +367,16 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                         self._data[CONF_SERVICE_ADDR] = service_addr
                 if self.source == SOURCE_REAUTH:
                     # Reauth only refreshes credentials — skip backfill/cost-mode.
-                    return self.async_update_reload_and_abort(
-                        self._get_reauth_entry(), data=self._data
-                    )
+                    return self.async_update_reload_and_abort(self._get_reauth_entry(), data=self._data)
                 return await self.async_step_backfill_options()
 
         return self.async_show_form(
             step_id="tfa_code",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema({vol.Required(CONF_TFA_CODE): str}), user_input
-            ),
+            data_schema=self.add_suggested_values_to_schema(vol.Schema({vol.Required(CONF_TFA_CODE): str}), user_input),
             errors=errors,
         )
 
-    async def async_step_backfill_options(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_backfill_options(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 3: Ask whether to backfill up to 365 days of consumption history.
 
@@ -410,10 +397,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             # Cost backfill depends on consumption backfill: cost statistics are
             # derived from consumption data, so you cannot backfill one without
             # backfilling the other.
-            if (
-                user_input[CONF_EXTENDED_COST_BACKFILL]
-                and not user_input[CONF_EXTENDED_BACKFILL]
-            ):
+            if user_input[CONF_EXTENDED_COST_BACKFILL] and not user_input[CONF_EXTENDED_BACKFILL]:
                 errors["base"] = "invalid_backfill_selection"
             else:
                 if user_input[CONF_EXTENDED_BACKFILL]:
@@ -433,9 +417,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_cost_mode(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_cost_mode(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 4: Select cost calculation mode.
 
@@ -448,7 +430,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         - For all other modes, creates the config entry immediately.
         """
         if user_input is not None:
-            mode = user_input[CONF_COST_MODE]
+            mode: Any = user_input[CONF_COST_MODE]
             if mode == COST_MODE_FIXED:
                 return await self.async_step_cost_mode_fixed_rate()
             self._options[CONF_COST_MODE] = mode
@@ -456,22 +438,18 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_gas_cost_mode()
             return self._async_create_dominionsc_entry(self._data)
 
-        mode_choices = build_cost_mode_choices()
+        mode_choices: dict[str, str] = build_cost_mode_choices()
 
         return self.async_show_form(
             step_id="cost_mode",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_COST_MODE, default=COST_MODE_RATE_8): vol.In(
-                        mode_choices
-                    ),
+                    vol.Required(CONF_COST_MODE, default=COST_MODE_RATE_8): vol.In(mode_choices),
                 }
             ),
         )
 
-    async def async_step_cost_mode_fixed_rate(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_cost_mode_fixed_rate(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 4a: Collect the custom $/kWh rate for fixed-rate mode.
 
@@ -490,16 +468,12 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="cost_mode_fixed_rate",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_FIXED_RATE, default=DEFAULT_FIXED_RATE
-                    ): vol.Coerce(float),
+                    vol.Required(CONF_FIXED_RATE, default=DEFAULT_FIXED_RATE): vol.Coerce(float),
                 }
             ),
         )
 
-    async def async_step_gas_cost_mode(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_gas_cost_mode(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 4b: Select gas cost calculation rate (shown only if GAS account detected).
 
@@ -520,17 +494,13 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="gas_cost_mode",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_GAS_COST_MODE, default=COST_MODE_NONE
-                    ): vol.In(gas_choices),
+                    vol.Required(CONF_GAS_COST_MODE, default=COST_MODE_NONE): vol.In(gas_choices),
                 }
             ),
         )
 
     @callback
-    def _async_create_dominionsc_entry(
-        self, data: dict[str, Any], **kwargs: Any
-    ) -> ConfigFlowResult:
+    def _async_create_dominionsc_entry(self, data: dict[str, Any], **kwargs: Any) -> ConfigFlowResult:
         """
         Create the config entry from the accumulated data and options.
 
@@ -545,9 +515,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             **kwargs,
         )
 
-    async def async_step_reauth(
-        self, entry_data: Mapping[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         """
         Start the re-authentication flow.
 
@@ -559,7 +527,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         can pre-fill the username field, then shows the ``reauth_confirm``
         form.
         """
-        reauth_entry = self._get_reauth_entry()
+        reauth_entry: ConfigEntry[Any] = self._get_reauth_entry()
         # Pre-load existing credentials so the confirm form can show the
         # current username and so _data is ready if the user doesn't change it.
         self._data = dict(reauth_entry.data)
@@ -568,9 +536,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={CONF_NAME: reauth_entry.title},
         )
 
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 2 of re-auth: collect fresh credentials.
 
@@ -584,7 +550,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
         - On credential failure, re-renders the form with an error.
         """
         errors: dict[str, str] = {}
-        reauth_entry = self._get_reauth_entry()
+        reauth_entry: ConfigEntry[Any] = self._get_reauth_entry()
 
         if user_input is not None:
             self._data.update(user_input)
@@ -611,9 +577,7 @@ class DominionSCConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(schema_dict), self._data
-            ),
+            data_schema=self.add_suggested_values_to_schema(vol.Schema(schema_dict), self._data),
             errors=errors,
             description_placeholders={CONF_NAME: reauth_entry.title},
         )

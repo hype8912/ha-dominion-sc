@@ -1,6 +1,6 @@
 """Tests for dominionsc sensor."""
 
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -51,9 +51,7 @@ def mock_coordinator() -> MagicMock:
     return coord
 
 
-async def test_async_setup_entry_with_forecast(
-    hass: HomeAssistant, mock_coordinator: MagicMock
-) -> None:
+async def test_async_setup_entry_with_forecast(hass: HomeAssistant, mock_coordinator: MagicMock) -> None:
     """1 account sensor + 6 billing sensors = 7 entities registered."""
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
@@ -64,7 +62,7 @@ async def test_async_setup_entry_with_forecast(
 
     mock_add.assert_called_once()
     entities = mock_add.call_args[0][0]
-    # Exact count: 1 account sensor × 1 account + 6 billing sensors = 7
+    # Exact count: 1 account sensor x 1 account + 6 billing sensors = 7
     assert len(entities) == 7
     keys = [s.entity_description.key for s in entities]
     assert _EXPECTED_ACCOUNT_KEY in keys
@@ -148,9 +146,7 @@ _BILLING_SENSOR_CASES = [
     _BILLING_SENSOR_CASES,
     ids=[c[0] for c in _BILLING_SENSOR_CASES],
 )
-def test_billing_sensor_returns_forecast_value(
-    sensor_key: str, forecast_attr: str, expected_value
-) -> None:
+def test_billing_sensor_returns_forecast_value(sensor_key: str, forecast_attr: str, expected_value) -> None:
     """Each billing sensor extracts its value from coordinator data correctly."""
     # Arrange
     coord = MagicMock()
@@ -168,9 +164,7 @@ def test_billing_sensor_returns_forecast_value(
     value = sensor.native_value
 
     # Assert
-    assert value == expected_value, (
-        f"Sensor '{sensor_key}' returned {value!r}, expected {expected_value!r}"
-    )
+    assert value == expected_value, f"Sensor '{sensor_key}' returned {value!r}, expected {expected_value!r}"
 
 
 @pytest.mark.parametrize(
@@ -192,9 +186,7 @@ def test_billing_sensor_none_when_forecast_is_none(sensor_key: str) -> None:
     value = sensor.native_value
 
     # Assert
-    assert value is None, (
-        f"Sensor '{sensor_key}' should return None when forecast is None, got {value!r}"
-    )
+    assert value is None, f"Sensor '{sensor_key}' should return None when forecast is None, got {value!r}"
 
 
 async def test_async_setup_entry_with_gas_cost(hass: HomeAssistant) -> None:
@@ -334,7 +326,7 @@ def test_cost_to_date_last_reset_returns_cycle_start() -> None:
     device = MagicMock()
     sensor = DominionSCSensor(coord, desc, "billing", device, "dev_1")
 
-    expected = datetime(2025, 3, 1, 0, 0, 0, tzinfo=dt_timezone.utc)
+    expected = datetime(2025, 3, 1, 0, 0, 0, tzinfo=UTC)
     assert sensor.last_reset == expected
 
 

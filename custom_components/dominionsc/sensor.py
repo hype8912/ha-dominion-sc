@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import UTC, date, datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -62,30 +62,44 @@ PARALLEL_UPDATES = 0
 
 
 @dataclass(frozen=True, kw_only=True)
-class DominionSCEntityDescription(SensorEntityDescription):
+class DominionSCAccountSensorDescription(SensorEntityDescription):
     """
-    Extended sensor description that includes a value-extraction function.
+    Sensor description for per-account sensors (ELECTRIC, GAS).
 
     Inherits all standard HA ``SensorEntityDescription`` fields (key,
     translation_key, device_class, unit, etc.) and adds ``value_fn`` so each
-    sensor can declare inline how to extract its value from the coordinator's
-    data snapshot.
+    sensor can declare inline how to extract its value from the account's
+    data slice.
 
     Attributes:
-        value_fn: A callable that accepts either a
-                  :class:`~.models.DominionSCAccountData` (for per-account
-                  sensors) or a :class:`~.models.DominionSCData` (for billing
-                  sensors) and returns the sensor's current state value.
-                  Returning ``None`` marks the sensor as unavailable.
+        value_fn: A callable that accepts a
+                  :class:`~.models.DominionSCAccountData` and returns the
+                  sensor's current state value. Returning ``None`` marks the
+                  sensor as unavailable.
 
     """
 
-    value_fn: Callable[
-        [DominionSCAccountData | DominionSCData], str | float | date | datetime | None
-    ]
-    # Optional: return the UTC datetime at which a TOTAL sensor last reset.
-    # Only needed for sensors whose value resets mid-stream (e.g. cost_to_date
-    # resets at the start of each billing cycle).
+    value_fn: Callable[[DominionSCAccountData], str | float | date | datetime | None]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DominionSCBillingSensorDescription(SensorEntityDescription):
+    """
+    Sensor description for billing sensors shared across a service address.
+
+    Attributes:
+        value_fn:      A callable that accepts the full
+                       :class:`~.models.DominionSCData` snapshot and returns the
+                       sensor's current state value. Returning ``None`` marks the
+                       sensor as unavailable.
+        last_reset_fn: Optional: return the UTC datetime at which a TOTAL sensor
+                       last reset. Only needed for sensors whose value resets
+                       mid-stream (e.g. cost_to_date resets at the start of each
+                       billing cycle).
+
+    """
+
+    value_fn: Callable[[DominionSCData], str | float | date | datetime | None]
     last_reset_fn: Callable[[DominionSCData], datetime | None] | None = None
 
 
@@ -96,8 +110,8 @@ class DominionSCEntityDescription(SensorEntityDescription):
 # on the service address. The ``value_fn`` receives the account's
 # DominionSCAccountData instance.
 
-ACCOUNT_SENSORS: tuple[DominionSCEntityDescription, ...] = (
-    DominionSCEntityDescription(
+ACCOUNT_SENSORS: tuple[DominionSCAccountSensorDescription, ...] = (
+    DominionSCAccountSensorDescription(
         key="last_changed",
         translation_key="last_changed",
         device_class=SensorDeviceClass.TIMESTAMP,
@@ -115,8 +129,8 @@ ACCOUNT_SENSORS: tuple[DominionSCEntityDescription, ...] = (
 # These are only registered when the coordinator's forecast is not None.
 # The ``value_fn`` receives the full DominionSCData instance.
 
-BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
-    DominionSCEntityDescription(
+BILLING_SENSORS: tuple[DominionSCBillingSensorDescription, ...] = (
+    DominionSCBillingSensorDescription(
         key="cost_to_date",
         translation_key="cost_to_date",
         device_class=SensorDeviceClass.MONETARY,
@@ -127,11 +141,11 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         # Cost accumulated so far in the current billing cycle (from Dominion API).
         value_fn=lambda data: data.forecast.cost_to_date if data.forecast else None,
         # Signal the billing cycle start so HA correctly handles the monthly reset.
-        last_reset_fn=lambda data: datetime.combine(
-            data.forecast.start_date, datetime.min.time(), tzinfo=dt_timezone.utc
-        ) if data.forecast else None,
+        last_reset_fn=lambda data: (
+            datetime.combine(data.forecast.start_date, datetime.min.time(), tzinfo=UTC) if data.forecast else None
+        ),
     ),
-    DominionSCEntityDescription(
+    DominionSCBillingSensorDescription(
         key="forecasted_cost",
         translation_key="forecasted_cost",
         device_class=SensorDeviceClass.MONETARY,
@@ -145,7 +159,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         # Dominion's projected end-of-cycle cost based on current usage trend.
         value_fn=lambda data: data.forecast.forecasted_cost if data.forecast else None,
     ),
-    DominionSCEntityDescription(
+    DominionSCBillingSensorDescription(
         key="typical_cost",
         translation_key="typical_cost",
         device_class=SensorDeviceClass.MONETARY,
@@ -157,7 +171,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         # Historical average cost for this time of year (from Dominion API).
         value_fn=lambda data: data.forecast.typical_cost if data.forecast else None,
     ),
-    DominionSCEntityDescription(
+    DominionSCBillingSensorDescription(
         key="start_date",
         translation_key="start_date",
         device_class=SensorDeviceClass.DATE,
@@ -165,7 +179,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         entity_registry_enabled_default=False,  # Hidden by default; enable if needed
         value_fn=lambda data: data.forecast.start_date if data.forecast else None,
     ),
-    DominionSCEntityDescription(
+    DominionSCBillingSensorDescription(
         key="end_date",
         translation_key="end_date",
         device_class=SensorDeviceClass.DATE,
@@ -173,7 +187,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
         entity_registry_enabled_default=False,  # Hidden by default; enable if needed
         value_fn=lambda data: data.forecast.end_date if data.forecast else None,
     ),
-    DominionSCEntityDescription(
+    DominionSCBillingSensorDescription(
         key="last_updated",
         translation_key="last_updated",
         device_class=SensorDeviceClass.TIMESTAMP,
@@ -185,7 +199,7 @@ BILLING_SENSORS: tuple[DominionSCEntityDescription, ...] = (
 
 
 # Gas cost sensor — registered only when gas cost statistics are being written.
-GAS_COST_SENSOR = DominionSCEntityDescription(
+GAS_COST_SENSOR = DominionSCBillingSensorDescription(
     key="gas_cost_to_date",
     translation_key="gas_cost_to_date",
     device_class=SensorDeviceClass.MONETARY,
@@ -206,7 +220,7 @@ async def async_setup_entry(
     """
     Set up sensor entities for a DominionSC config entry.
 
-    Called by HA after ``__init__.async_setup_entry`` has initialised the
+    Called by HA after ``__init__.async_setup_entry`` has Initialized the
     coordinator and forwarded platform setup. Creates one
     :class:`DominionSCSensor` per (account, sensor description) combination
     for account sensors, and one per billing sensor description if a forecast
@@ -297,22 +311,22 @@ class DominionSCSensor(CoordinatorEntity[DominionSCCoordinator], SensorEntity):
     standard HA sensor contract.
 
     The actual value extraction is delegated to the ``value_fn`` in the
-    entity's :class:`DominionSCEntityDescription`, keeping this class generic.
+    entity's description, keeping this class generic.
     """
 
     _attr_has_entity_name = True
-    entity_description: DominionSCEntityDescription
+    entity_description: DominionSCAccountSensorDescription | DominionSCBillingSensorDescription
 
     def __init__(
         self,
         coordinator: DominionSCCoordinator,
-        description: DominionSCEntityDescription,
+        description: DominionSCAccountSensorDescription | DominionSCBillingSensorDescription,
         account: str,
         device: DeviceInfo,
         device_id: str,
     ) -> None:
         """
-        Initialise a DominionSC sensor.
+        Initialize a DominionSC sensor.
 
         Args:
             coordinator: The shared data coordinator for this config entry.
@@ -345,14 +359,15 @@ class DominionSCSensor(CoordinatorEntity[DominionSCCoordinator], SensorEntity):
         for the actual value extraction.
         """
         coordinator_data = self.coordinator.data
+        description = self.entity_description
 
-        if self.account == "billing":
+        if isinstance(description, DominionSCBillingSensorDescription):
             # Billing sensors operate on the full coordinator data snapshot
             # (they read from coordinator_data.forecast).
-            return self.entity_description.value_fn(coordinator_data)
+            return description.value_fn(coordinator_data)
 
         # Account sensors operate on the per-account data slice.
-        return self.entity_description.value_fn(coordinator_data.accounts[self.account])
+        return description.value_fn(coordinator_data.accounts[self.account])
 
     @property
     def last_reset(self) -> datetime | None:
@@ -364,6 +379,7 @@ class DominionSCSensor(CoordinatorEntity[DominionSCCoordinator], SensorEntity):
         each billing cycle). HA uses this to correctly detect the monthly reset
         and avoid misclassifying the drop as a negative delta.
         """
-        if self.entity_description.last_reset_fn is None:
+        description = self.entity_description
+        if not isinstance(description, DominionSCBillingSensorDescription) or description.last_reset_fn is None:
             return None
-        return self.entity_description.last_reset_fn(self.coordinator.data)
+        return description.last_reset_fn(self.coordinator.data)

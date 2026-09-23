@@ -103,15 +103,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: DominionSCConfigEntry) -
                 "Dominion Energy SC rate values changed on 2026-07-01. "
                 "Cost statistics from 2025-07-23 to 2026-06-30 were calculated "
                 "at old tariff rates. "
-                "Go to **Settings → Devices & Services → Dominion Energy SC → Configure** "
-                "and select *Recalculate History* to update historical cost data."
+                "Go to **Settings → Devices & Services → Dominion Energy SC → "
+                "Configure** and select *Recalculate History* to update "
+                "historical cost data."
             ),
             title="Dominion Energy SC: Rate Update",
             notification_id="dominionsc_rate_schema_update",
         )
         hass.config_entries.async_update_entry(
             entry,
-            data={**entry.data, CONF_LAST_RATE_SCHEMA_VERSION: CURRENT_RATE_SCHEMA_VERSION},
+            data={
+                **entry.data,
+                CONF_LAST_RATE_SCHEMA_VERSION: CURRENT_RATE_SCHEMA_VERSION,
+            },
         )
 
     entry.async_on_unload(entry.add_update_listener(update_listener))

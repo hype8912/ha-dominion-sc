@@ -51,7 +51,10 @@ ha-dominion-sc/
 │   ├── options_flow.py             # Post-install settings
 │   ├── sensor.py                   # HA sensor entities
 │   ├── const.py                    # Constants and helpers
-│   ├── models.py                   # Pure dataclasses (no HA dependency)
+│   ├── models/                     # Pure dataclasses (no HA dependency), one per module
+│   │   ├── statistic_metadata.py   # DominionSCStatisticMetadata
+│   │   ├── account_data.py         # DominionSCAccountData
+│   │   └── coordinator_data.py     # DominionSCData
 │   ├── rates.py                    # Rate plan adapter (COST_MODE_* → library RatePlan)
 │   ├── cost.py                     # Per-interval cost calculation
 │   ├── billing.py                  # Billing-cycle boundary estimation
@@ -59,7 +62,7 @@ ha-dominion-sc/
 │   ├── statistics_ids.py           # Statistic ID construction
 │   ├── strings.json                # UI translatable strings
 │   └── translations/en.json        # English translations
-├── tests/                          # Test suite (281 tests, 100% coverage)
+├── tests/                          # Test suite
 │   ├── conftest.py                 # pytest fixtures
 │   ├── _fake_recorder.py           # In-memory recorder stand-in (see Section 7)
 │   ├── test_config_flow.py
@@ -72,6 +75,7 @@ ha-dominion-sc/
 │   └── test_init.py
 ├── docs/
 │   ├── REFACTOR_PLAN.md            # History of the 5-phase refactor
+│   ├── LIBRARY_MIGRATION_PLAN.md   # History of moving rate definitions to the library
 │   └── windows-testing-setup.md
 ├── pyproject.toml                  # Build config, ruff, pytest settings
 ├── uv.lock                         # Locked dependencies
@@ -142,7 +146,7 @@ _process_and_insert_statistics()
 
 | Module | Has HA dependency? | Purpose |
 |---|---|---|
-| `models.py` | No | Data containers |
+| `models/` | No | Data containers (one dataclass per module, re-exported from the package) |
 | `rates.py` | No | Rate plan adapter (COST_MODE_* → library RatePlan) |
 | `cost.py` | No | Per-interval cost calculation |
 | `billing.py` | No | Billing-cycle boundary estimation |
@@ -174,15 +178,18 @@ The central orchestrator. Key methods:
 | `_backfill_statistics()` | First poll for an account | Loads historical data |
 | `_update_statistics()` | Subsequent polls | Adds new + gap-fills |
 | `_process_and_insert_statistics()` | Both paths above | Fetches, aggregates, writes |
-| `async_recalculate_historic_costs()` | From options flow | Re-prices historical data |
+| `async_recalculate_historic_costs()` | From options flow | Re-prices historical data for ELECTRIC and/or GAS (whichever has a non-`COST_MODE_NONE` mode in the new options), each via `_recalculate_one_account()` |
 
 ### `rates.py` — Rate schedule adapter
 
 Thin adapter between the integration's `COST_MODE_*` string keys and the
 `dominion-sc-power` library's `RatePlan` objects. Rate definitions live in
-the library; this module provides `RATE_PLAN_REGISTRY` (electric),
-`GAS_RATE_PLAN_REGISTRY` (gas), and the UI choice builders
-`build_cost_mode_choices()` / `build_gas_cost_mode_choices()`.
+the library; this module provides `RATE_PLAN_REGISTRY` (electric) and
+`GAS_RATE_PLAN_REGISTRY` (gas), which mirror the library's
+`RESIDENTIAL_ELECTRIC_RATE_PLANS` / `RESIDENTIAL_GAS_RATE_PLANS` catalogs, and
+the UI choice builders `build_cost_mode_choices()` /
+`build_gas_cost_mode_choices()`, which label each plan with its library
+`RatePlan.name` (plus short HA notes for Rate 1 and Rate 7).
 
 ### `billing.py` — Billing cycle estimation
 
@@ -223,7 +230,7 @@ and continues from that value when appending new rows.
 
 ### 5.3 Tiered Rate Calculations
 
-Dominion's Rate 8 and Rate 6 are two-tier rates:
+Dominion's Rate 8, Rate 6, and Rate 1 are two-tier rates:
 - **First 800 kWh** per billing cycle: charged at `rate_under`.
 - **Over 800 kWh**: charged at `rate_over`.
 
@@ -233,6 +240,20 @@ split: part at `rate_under`, part at `rate_over`. See `cost._calculate_tiered_co
 
 The cumulative counter **resets to 0** at each billing-cycle boundary. The
 boundaries are estimated by `billing._estimate_billing_cycles()`.
+
+### 5.3.1 Rate History
+
+Rates change over time, so the price for an interval depends on its date, not
+only on the selected plan. The `dominion-sc-power` library keeps every known
+tariff period for a plan (for example `RATE_8_2025` for 2025-07-23 through
+2026-06-30, then the current `RATE_8`).
+`cost._calculate_cost_for_wh()` calls `dominionsc.get_rate_plan_for_date()` with
+the plan's code and the interval's date, and prices the interval with whichever
+period is returned. Intervals before the earliest known period cost $0.
+Superseded periods carry only the usage charge, which is all this integration
+prices. To add a future tariff change, add the new plan and archive the old one
+in the library. This integration needs no code change beyond bumping the
+library version (and `CURRENT_RATE_SCHEMA_VERSION`, see Section 9).
 
 ### 5.4 Register Discovery (Phase 5)
 
@@ -303,7 +324,51 @@ being awaited) must catch its own expected exceptions at the top level and
 surface them some other way — here, via `persistent_notification`. Don't
 rely on a future caller to add error handling; there isn't one.
 
-### 5.8 Zero-Consumption Filtering
+### 5.8 Recalculation is the *only* thing that re-prices already-recorded consumption
+
+Regular polling (`_process_and_insert_statistics` → `aggregate_hourly_data`)
+only ever prices **new** hours — any hour already in `existing_hours` is
+skipped before the cost-calculation block even runs (see
+`aggregation.py`'s `existing_hours` check, which happens *before* pricing).
+This means once an hour of consumption is written to the recorder, its cost
+is frozen at whatever it was priced at (or never priced at all, if no cost
+mode was active yet) — no future regular poll will ever revisit it, no
+matter what the cost mode later changes to.
+
+`async_recalculate_historic_costs()` is the only code path that re-prices
+existing rows, which is why it has to handle **every** account that might
+need it, not just the one the user most recently touched. It didn't
+originally — it only recalculated ELECTRIC on the (once-true) assumption
+that gas had no cost statistic. Once gas cost modes were added, a user
+enabling a gas rate plan had no way to price consumption recorded before
+(or without) a priced cost — it silently stayed at $0.00 forever, since
+nothing else was ever going to reprice it. The fix, `_recalculate_one_account`
+(Section 4), made the pricing logic account-agnostic and
+`_async_recalculate_historic_costs_locked` calls it once per account that
+has a non-`COST_MODE_NONE` mode in the new options — independently, so
+changing only gas (with electric untouched) still triggers a real
+recalculation instead of silently no-op'ing.
+
+The options flow's `async_step_init` had a matching bug: it only offered the
+recalculate-history prompt based on the *electric* mode selection. A user
+with electric cost mode `None` who only turned on a gas rate plan would
+never even see the recalculation option. Fixed by also checking whether the
+new gas mode is non-`COST_MODE_NONE` (see `options_flow.py`'s
+`async_step_init`).
+
+Relatedly, `async_step_recalculate_date_range`'s default start date used to
+be the 1st of the current month — an easy trap, since it looks like a
+sensible default but silently limits recalculation to the current billing
+cycle. `_async_earliest_consumption_date()` now defaults it to the earliest
+recorded consumption for whichever account(s) are being recalculated
+(querying with `period="month"` so it's cheap even across a year-plus of
+history), so accepting the default reprices full history rather than a
+sliver of it. If you add a case where recalculation should be scoped
+differently, don't reintroduce a hardcoded start date without a strong
+reason — it's exactly the kind of thing that looks fine until someone's
+old data quietly stays unpriced.
+
+### 5.9 Zero-Consumption Filtering
 
 The Dominion API sometimes returns all-zero intervals for a day when that
 day's data hasn't been processed yet (e.g. very recent days or holidays).
@@ -321,31 +386,34 @@ because it is far more common for zeros to indicate missing data.
 ### Add a new rate schedule
 
 Rate definitions live in the `dominion-sc-power` library, not in the
-integration. To expose a new rate in the UI:
+integration. Both registries and the UI selectors are built from the library's
+residential catalogs, so a plan added there (with a `RatePlan.code` such as
+`rate_9`) appears in the selector automatically, labelled with its
+`RatePlan.name`. Optionally:
 
-1. In `const.py`: add a new `COST_MODE_*` constant whose value matches
-   the library `RatePlan.code` (e.g. `COST_MODE_RATE_9 = "rate_9"`).
-2. In `rates.py` (`RATE_PLAN_REGISTRY` for electric, `GAS_RATE_PLAN_REGISTRY`
-   for gas): add the new constant to the generator tuple.
-3. In `rates.py` (`build_cost_mode_choices()` or `build_gas_cost_mode_choices()`):
-   add a display string for the new mode.
+- In `const.py`: add a `COST_MODE_*` constant (value equal to the library
+  code) only if the integration refers to the plan by name in code.
+- In `rates.py`: add the code to `_ELECTRIC_DISPLAY_ORDER` to place it among
+  the common plans (otherwise it is listed after them), or to
+  `_LABEL_SUFFIXES` to append an integration-specific note to its label.
 
-`_resolve_cost_config()` and `_resolve_gas_cost_config()` will pick up the
-new entry automatically. No other files need to change.
+`_resolve_cost_config()` and `_resolve_gas_cost_config()` pick up the new
+entry automatically.
 
 ### Add a new sensor
 
-1. In `sensor.py`: add a new `DominionSCEntityDescription` to either
-   `ACCOUNT_SENSORS` (for per-account data) or `BILLING_SENSORS` (for
-   forecast data).
+1. In `sensor.py`: add a new `DominionSCAccountSensorDescription` to
+   `ACCOUNT_SENSORS` (for per-account data) or a
+   `DominionSCBillingSensorDescription` to `BILLING_SENSORS` (for forecast
+   data).
 2. Add the translation key to `strings.json` and `translations/en.json`.
 3. Add a test in `test_sensor.py`.
 
-`DominionSCEntityDescription` fields:
-- `value_fn`: required. Callable that receives `DominionSCAccountData` (for
-  account sensors) or `DominionSCData` (for billing sensors) and returns the
+Description fields:
+- `value_fn`: required. Callable that receives `DominionSCAccountData` (account
+  descriptions) or `DominionSCData` (billing descriptions) and returns the
   sensor's state value. Return `None` to mark the sensor unavailable.
-- `last_reset_fn`: optional. Only set this for `SensorStateClass.TOTAL` sensors
+- `last_reset_fn`: optional, billing descriptions only. Only set this for `SensorStateClass.TOTAL` sensors
   whose value resets mid-stream (e.g. a billing-cycle running total). Callable
   that receives the full `DominionSCData` and returns a UTC-aware `datetime`
   of the last reset. HA uses this to avoid misclassifying the drop as a negative
@@ -422,8 +490,9 @@ backfilled data).
 
 ### Coverage target
 
-100% line and branch coverage is enforced in CI. If you add new code, add
-tests for every branch.
+The goal is 100% line and branch coverage. CI reports coverage but does not
+fail the build below a threshold, so check the `term-missing` output yourself
+and add tests for every new branch.
 
 ### Test files by area
 
@@ -434,7 +503,7 @@ tests for every branch.
 | `test_coordinator_scenarios.py` | Multi-poll scenarios (gap-fill, recalculation) via `_fake_recorder.py` |
 | `test_phase5_register_aware.py` | Register discovery, multi-register routing |
 | `test_sensor.py` | Sensor entity value extraction, gas cost sensor |
-| `test_rates.py` | Rate plan registry, cost mode choices |
+| `test_rates.py` | Rate plan registry, cost mode choices, prior-period pricing via library history |
 | `test_const.py` | `clean_service_addr` output |
 | `test_init.py` | `async_setup_entry`, `async_unload_entry`, schema version notification |
 
@@ -514,7 +583,7 @@ tariff values the user's statistics were last computed against. Increment
 rates are added). Do not rename the key — renaming it would suppress the
 migration notification for existing users who need to recalculate.
 
-### `COST_MODE_RATE_8 = "rate_8"` and `COST_MODE_RATE_6 = "rate_6"`
+### `COST_MODE_*` rate values (`"rate_8"`, `"rate_6"`, `"rate_1"`, etc.)
 
 These string values are stored in `entry.options` for every existing user.
 Changing them would silently clear all users' cost mode selection on the
@@ -540,14 +609,11 @@ API call timing, statistics insertion counts, and gap-fill decisions.
 
 ### Checking what statistics are in the recorder
 
-From the HA Developer Tools → Template tab:
+Use **Developer Tools** → **Statistics** and search for `dominionsc`. The
+statistics are external statistics, not entities, so they don't appear in the
+States or Template tools.
 
-```jinja
-{% set stats = states | selectattr('entity_id', 'match', 'sensor.dominionsc.*') | list %}
-{{ stats | map(attribute='entity_id') | list }}
-```
-
-Or query the SQLite database directly:
+To query the SQLite database directly:
 ```sql
 SELECT statistic_id, COUNT(*) as rows, MAX(start) as latest
 FROM statistics
@@ -572,5 +638,5 @@ target:
 | `ConfigEntryAuthFailed` | TFA session token expired; HA will prompt for re-auth |
 | `UpdateFailed` | Network error; HA retries automatically |
 | Statistics not appearing in Energy Dashboard | Statistic ID mismatch; check logs for the actual ID being used |
-| Costs are zero for historical data | Rate schedule effective date is after the backfill start date |
+| Costs are zero for historical data | Interval predates the earliest tariff period the library knows for that plan (see 5.3.1) |
 | Duplicate statistics / incorrect sums | Backfill ran twice; check `_backfill_initiated` state |

@@ -65,7 +65,7 @@ import asyncio
 import logging
 from datetime import date, datetime, timedelta
 from string import Template
-from typing import Any
+from typing import Any, cast
 
 from dominionsc import (
     DominionSC,
@@ -127,11 +127,11 @@ _LOGGER = logging.getLogger(__name__)
 type DominionSCConfigEntry = ConfigEntry[DominionSCCoordinator]
 
 # Re-exported for backward compatibility. The dataclasses now live in
-# models.py, the pure cost helpers in cost.py, the billing-cycle helpers in
+# models/, the pure cost helpers in cost.py, the billing-cycle helpers in
 # billing.py, and statistic-id construction in statistics_ids.py; existing
 # imports of ``from ...coordinator import <name>`` continue to resolve via
 # these re-exports. See docs/REFACTOR_PLAN.md Phase 2.
-__all__ = [
+__all__: list[str] = [
     "DominionSCAccountData",
     "DominionSCConfigEntry",
     "DominionSCCoordinator",
@@ -178,7 +178,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         config_entry: DominionSCConfigEntry,
     ) -> None:
         """
-        Initialise the coordinator and create the API client.
+        Initialize the coordinator and create the API client.
 
         Args:
             hass:         The Home Assistant instance.
@@ -271,15 +271,15 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             _LOGGER.error("Error during login: %s", err)
             raise
 
-        accounts, live_service_addr = await self.api.async_get_accounts()
+        # The library annotates this as ``list[list[str] | str]``; it is really a
+        # ``[accounts, service_addr]`` pair.
+        accounts, live_service_addr = cast("tuple[list[str], str]", await self.api.async_get_accounts())
 
         # Use the service address locked in entry.data at initial setup for all
         # statistic-ID construction. This prevents IDs from silently changing if
         # the Dominion API returns a different address format on a later poll.
         # Falls back to the live API value for installs that predate this field.
-        canonical_addr = (
-            self.config_entry.data.get(CONF_SERVICE_ADDR) or live_service_addr
-        )
+        canonical_addr = self.config_entry.data.get(CONF_SERVICE_ADDR) or live_service_addr
 
         try:
             _LOGGER.debug("API: async_get_forecast")
@@ -295,9 +295,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         # Because DominionSC provides historical usage with a delay of a couple of days
         # we need to insert data into statistics.
-        last_changed_per_account = await self._insert_statistics(
-            accounts, canonical_addr, forecast
-        )
+        last_changed_per_account = await self._insert_statistics(accounts, canonical_addr, forecast)
 
         # Build account-specific data dictionary
         account_data = {
@@ -427,14 +425,14 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         cost_statistic_id: str | None,
         name_prefix: Template,
         last_changed_per_account: dict[str, datetime],
-        forecast: Forecast | None,
+        forecast: Forecast,
     ) -> None:
         """
         Decide whether to backfill or incrementally update one statistic series.
 
         This method contains the backfill-vs-update decision logic in a single
         place so that both the sole-register (legacy) path and the multi-register
-        (Phase 5) path in :meth:`_insert_statistics` share identical behaviour.
+        (Phase 5) path in :meth:`_insert_statistics` share identical behavior.
 
         Decision tree:
         - No existing statistics in recorder AND backfill not yet started
@@ -475,14 +473,8 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         _LOGGER.debug("Updating Statistics for %s", consumption_statistic_id)
 
-        consumption_unit_class = (
-            EnergyConverter.UNIT_CLASS
-            if account == "ELECTRIC"
-            else VolumeConverter.UNIT_CLASS
-        )
-        consumption_unit = (
-            UnitOfEnergy.WATT_HOUR if account == "ELECTRIC" else UnitOfVolume.CUBIC_FEET
-        )
+        consumption_unit_class = EnergyConverter.UNIT_CLASS if account == "ELECTRIC" else VolumeConverter.UNIT_CLASS
+        consumption_unit = UnitOfEnergy.WATT_HOUR if account == "ELECTRIC" else UnitOfVolume.CUBIC_FEET
 
         # Check if we have existing statistics
         last_stat = await get_instance(self.hass).async_add_executor_job(
@@ -520,8 +512,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                 return
 
             _LOGGER.info(
-                "First statistics update for %s - "
-                "backfilling since last billing cycle.",
+                "First statistics update for %s - backfilling since last billing cycle.",
                 consumption_statistic_id,
             )
             self._backfill_initiated[backfill_key] = True
@@ -562,7 +553,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         self,
         accounts: list[str],
         service_addr_account_no: str,
-        forecast: Forecast | None,
+        forecast: Forecast,
     ) -> dict[str, datetime]:
         """
         Orchestrate statistics insertion for all accounts on a service address.
@@ -593,7 +584,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             accounts:               List of account type strings (e.g.
                                     ``["ELECTRIC", "GAS"]``).
             service_addr_account_no: Service address / account number from API.
-            forecast:               Current billing forecast, or ``None``.
+            forecast:               Current billing forecast.
 
         Returns:
             Dict mapping account type -> timestamp of most recent interval
@@ -602,9 +593,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         """
         last_changed_per_account: dict[str, datetime] = {}
         for account in accounts:
-            legacy_consumption_id, legacy_cost_id, legacy_name_prefix = (
-                _build_statistic_ids(service_addr_account_no, account)
-            )
+            legacy_consumption_id, legacy_cost_id, legacy_name_prefix = _build_statistic_ids(service_addr_account_no, account)
 
             legacy_last_stat = await get_instance(self.hass).async_add_executor_job(
                 get_last_statistics,
@@ -615,9 +604,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                 {"sum"},
             )
 
-            if legacy_last_stat.get(
-                legacy_consumption_id
-            ) or self._backfill_initiated.get(account, False):
+            if legacy_last_stat.get(legacy_consumption_id) or self._backfill_initiated.get(account, False):
                 # Established install, or a legacy backfill already started
                 # this cycle and we're waiting on the recorder to commit --
                 # proceed exactly as pre-Phase-5, no discovery call.
@@ -655,13 +642,11 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                     [r.usage_point_id for r in registers],
                 )
                 for register in registers:
-                    consumption_statistic_id, cost_statistic_id, name_prefix = (
-                        _build_register_statistic_ids(
-                            service_addr_account_no,
-                            account,
-                            usage_point_id=register.usage_point_id,
-                            is_sole_register=False,
-                        )
+                    consumption_statistic_id, cost_statistic_id, name_prefix = _build_register_statistic_ids(
+                        service_addr_account_no,
+                        account,
+                        usage_point_id=register.usage_point_id,
+                        is_sole_register=False,
                     )
                     await self._process_account(
                         account=account,
@@ -679,7 +664,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         self,
         metadata: DominionSCStatisticMetadata,
         last_changed_per_account: dict[str, datetime],
-        forecast: Forecast | None,
+        forecast: Forecast,
     ) -> None:
         """
         Load historical statistics on first setup (initial backfill).
@@ -720,14 +705,9 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         data_date = today - timedelta(days=1)  # Yesterday
 
         extended = self.config_entry.options.get(CONF_EXTENDED_BACKFILL, False)
-        extended_cost = self.config_entry.options.get(
-            CONF_EXTENDED_COST_BACKFILL, False
-        )
+        extended_cost = self.config_entry.options.get(CONF_EXTENDED_COST_BACKFILL, False)
 
-        if extended:
-            start_date = today - timedelta(days=EXTENDED_BACKFILL_DAYS)
-        else:
-            start_date = billing_cycle_start
+        start_date = today - timedelta(days=EXTENDED_BACKFILL_DAYS) if extended else billing_cycle_start
 
         # When consumption is extended but cost is not, limit cost to the
         # current billing cycle.  When both are extended (or neither is),
@@ -737,8 +717,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             cost_start_date = billing_cycle_start
 
         _LOGGER.debug(
-            "Backfilling statistics from %s to %s "
-            "(extended=%s, extended_cost=%s, billing_cycle_start=%s)",
+            "Backfilling statistics from %s to %s (extended=%s, extended_cost=%s, billing_cycle_start=%s)",
             start_date,
             data_date,
             extended,
@@ -765,7 +744,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         last_stat: dict,
         last_cost_stat: dict,
         last_changed_per_account: dict[str, datetime],
-        forecast: Forecast | None,
+        forecast: Forecast,
     ) -> None:
         """
         Incrementally update statistics since the last recorded data point.
@@ -851,9 +830,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         # Determine the date range to fetch
         today = date.today()
-        data_date = today - timedelta(
-            days=1
-        )  # Yesterday is the most recent complete day
+        data_date = today - timedelta(days=1)  # Yesterday is the most recent complete day
 
         _LOGGER.debug(
             "Date comparison: last_stat_date=%s, data_date=%s",
@@ -872,9 +849,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         start_date = min(last_stat_date + timedelta(days=1), lookback_date)
         if start_date < oldest_available:
             _LOGGER.warning(
-                "Statistics are very stale (last: %s). "
-                "Limiting fetch to last billing cycle. "
-                "Some historical data may be lost.",
+                "Statistics are very stale (last: %s). Limiting fetch to last billing cycle. Some historical data may be lost.",
                 last_stat_date,
             )
             start_date = oldest_available
@@ -883,14 +858,10 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         # We need this both to detect gaps and to pass to the processing
         # function so it can skip already-recorded hours.
         tz = await dt_util.async_get_time_zone(self.api.get_timezone())
-        lookback_start_dt = datetime.combine(start_date, datetime.min.time()).replace(
-            tzinfo=tz
-        )
-        lookback_end_dt = datetime.combine(
-            data_date + timedelta(days=1), datetime.min.time()
-        ).replace(tzinfo=tz)
+        lookback_start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=tz)
+        lookback_end_dt = datetime.combine(data_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=tz)
 
-        existing_rows: list[dict] = (
+        existing_rows = (
             await get_instance(self.hass).async_add_executor_job(
                 statistics_during_period,
                 self.hass,
@@ -930,8 +901,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         if not has_new_days and not missing_dates:
             _LOGGER.debug(
-                "Statistics up to date and no gaps found in lookback window "
-                "(%s to %s, %d hours recorded)",
+                "Statistics up to date and no gaps found in lookback window (%s to %s, %d hours recorded)",
                 start_date,
                 data_date,
                 len(existing_hours),
@@ -1010,15 +980,11 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         """
         if is_electric:
-            cost_mode_here, fixed_rate_here, rate_plan_here = _resolve_cost_config(
-                self.config_entry.options
-            )
+            cost_mode_here, fixed_rate_here, rate_plan_here = _resolve_cost_config(self.config_entry.options)
             is_tiered_rate = cost_mode_here in RATE_PLAN_REGISTRY
         else:
             # Gas accounts: resolve gas cost config; no fixed rate or tiered mode.
-            cost_mode_here, rate_plan_here = _resolve_gas_cost_config(
-                self.config_entry.options
-            )
+            cost_mode_here, rate_plan_here = _resolve_gas_cost_config(self.config_entry.options)
             fixed_rate_here = 0.0
             is_tiered_rate = False
         return aggregate_hourly_data(
@@ -1111,9 +1077,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                 # Legacy / sole-register path: flat, merged usage reads --
                 # unchanged from pre-Phase-5 behavior.
                 _LOGGER.debug("API: async_get_usage_reads")
-                usage_reads = await self.api.async_get_usage_reads(
-                    metadata.account, start, end
-                )
+                usage_reads = await self.api.async_get_usage_reads(metadata.account, start, end)
             else:
                 # Multi-register path: fetch grouped by register and select
                 # only this metadata's register. A register with no data in
@@ -1123,15 +1087,9 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                     "API: async_get_register_reads (register=%s)",
                     metadata.usage_point_id,
                 )
-                registers = await self.api.async_get_register_reads(
-                    metadata.account, start, end
-                )
+                registers = await self.api.async_get_register_reads(metadata.account, start, end)
                 matching_register = next(
-                    (
-                        r
-                        for r in registers
-                        if r.usage_point_id == metadata.usage_point_id
-                    ),
+                    (r for r in registers if r.usage_point_id == metadata.usage_point_id),
                     None,
                 )
                 usage_reads = matching_register.reads if matching_register else []
@@ -1144,8 +1102,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
 
         if not usage_reads:
             _LOGGER.debug(
-                "No interval data for statistics (requested %s to %s). "
-                "API may not have data available yet.",
+                "No interval data for statistics (requested %s to %s). API may not have data available yet.",
                 start_date,
                 data_date,
             )
@@ -1170,9 +1127,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                 len(zero_days),
                 sorted(zero_days),
             )
-            usage_reads = [
-                i for i in usage_reads if i.start_time.date() not in zero_days
-            ]
+            usage_reads = [i for i in usage_reads if i.start_time.date() not in zero_days]
 
         if not usage_reads:
             _LOGGER.debug("No valid interval data after filtering zero days")
@@ -1202,23 +1157,18 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         for hour_start in sorted(hourly_consumption.keys()):
             consumption = hourly_consumption[hour_start]
             consumption_sum += consumption
-            consumption_statistics.append(
-                StatisticData(start=hour_start, state=consumption, sum=consumption_sum)
-            )
+            consumption_statistics.append(StatisticData(start=hour_start, state=consumption, sum=consumption_sum))
 
         if hourly_cost:
             for hour_start in sorted(hourly_cost.keys()):
                 cost = hourly_cost[hour_start]
                 if cost > 0:
                     cost_sum += cost
-                    cost_statistics.append(
-                        StatisticData(start=hour_start, state=cost, sum=cost_sum)
-                    )
+                    cost_statistics.append(StatisticData(start=hour_start, state=cost, sum=cost_sum))
 
         if not consumption_statistics:
             _LOGGER.debug(
-                "No new statistics to insert for %s "
-                "(all hours may already be recorded)",
+                "No new statistics to insert for %s (all hours may already be recorded)",
                 metadata.consumption_id,
             )
             if last_stat_dt:
@@ -1254,9 +1204,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             operation_type,
             consumption_sum,
         )
-        async_add_external_statistics(
-            self.hass, consumption_metadata, consumption_statistics
-        )
+        async_add_external_statistics(self.hass, consumption_metadata, consumption_statistics)
 
         # Add cost statistics for accounts with a cost mode configured
         # (both electric and gas when a gas rate plan is selected).
@@ -1303,9 +1251,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         """
         async with self.recalculation_lock:
             try:
-                await self._async_recalculate_historic_costs_locked(
-                    start_date, end_date, new_options
-                )
+                await self._async_recalculate_historic_costs_locked(start_date, end_date, new_options)
             except (CannotConnect, ApiException, TimeoutError) as err:
                 _LOGGER.error("Historic cost recalculation failed: %s", err)
                 persistent_notification.async_create(
@@ -1371,8 +1317,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             return
 
         _LOGGER.info(
-            "Starting historic cost recalculation from %s to %s "
-            "(electric mode: %s, gas mode: %s)",
+            "Starting historic cost recalculation from %s to %s (electric mode: %s, gas mode: %s)",
             start_date,
             end_date,
             new_cost_mode if want_electric else "unchanged",
@@ -1388,10 +1333,10 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         window_start = _to_dt(start_date)
         window_end = _to_dt(end_date + timedelta(days=1))
 
-        accounts, live_service_addr = await self.api.async_get_accounts()
-        canonical_addr = (
-            self.config_entry.data.get(CONF_SERVICE_ADDR) or live_service_addr
-        )
+        # The library annotates this as ``list[list[str] | str]``; it is really a
+        # ``[accounts, service_addr]`` pair.
+        accounts, live_service_addr = cast("tuple[list[str], str]", await self.api.async_get_accounts())
+        canonical_addr = self.config_entry.data.get(CONF_SERVICE_ADDR) or live_service_addr
 
         if want_electric:
             if "ELECTRIC" not in accounts:
@@ -1499,10 +1444,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
                              local dates for billing-cycle lookup.
 
         """
-        consumption_id, cost_id, name_prefix = _build_statistic_ids(
-            canonical_addr, account
-        )
-        assert cost_id is not None
+        consumption_id, cost_id, name_prefix = _build_statistic_ids(canonical_addr, account)
 
         # For tiered rates, start from the earliest estimated cycle so the
         # cumulative Wh counter is correct even when the window is mid-cycle.
@@ -1510,12 +1452,10 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         if billing_cycles:
             fetch_start = min(
                 fetch_start,
-                datetime.combine(billing_cycles[0][0], datetime.min.time()).replace(
-                    tzinfo=tz
-                ),
+                datetime.combine(billing_cycles[0][0], datetime.min.time()).replace(tzinfo=tz),
             )
 
-        consumption_rows: list[dict] = (
+        consumption_rows = (
             await get_instance(self.hass).async_add_executor_job(
                 statistics_during_period,
                 self.hass,
@@ -1529,9 +1469,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         ).get(consumption_id, [])
 
         if not consumption_rows:
-            _LOGGER.warning(
-                "No %s consumption data in %s-%s.", account, start_date, end_date
-            )
+            _LOGGER.warning("No %s consumption data in %s-%s.", account, start_date, end_date)
             return
 
         # ── Seed running cost sum from last record before the window ──────────
@@ -1546,10 +1484,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
         )
         if cost_id in last_cost:
             last_ts = last_cost[cost_id][0].get("start", 0)
-            if isinstance(last_ts, (int, float)):
-                last_ts_dt = datetime.fromtimestamp(last_ts, tz=dt_util.UTC)
-            else:
-                last_ts_dt = last_ts
+            last_ts_dt = datetime.fromtimestamp(last_ts, tz=dt_util.UTC) if isinstance(last_ts, (int, float)) else last_ts
             if last_ts_dt < window_start:
                 pre_cost_sum = float(last_cost[cost_id][0].get("sum") or 0.0)
 
@@ -1584,9 +1519,7 @@ class DominionSCCoordinator(DataUpdateCoordinator[DominionSCData]):
             # only fetched to seed the cumulative counter for mid-cycle starts)
             if cost > 0 and row_date >= start_date:
                 running_sum += cost
-                cost_statistics.append(
-                    StatisticData(start=hour_dt, state=cost, sum=running_sum)
-                )
+                cost_statistics.append(StatisticData(start=hour_dt, state=cost, sum=running_sum))
 
         if not cost_statistics:
             _LOGGER.warning(

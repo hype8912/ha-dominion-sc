@@ -60,7 +60,10 @@ class FakeStatisticsStore:
         last = rows[-1]
         return {
             statistic_id: [
-                {"start": last["start"].timestamp(), **{t: last[t] for t in types if t in last}}
+                {
+                    "start": last["start"].timestamp(),
+                    **{t: last[t] for t in types if t in last},
+                }
             ]
         }
 
@@ -113,7 +116,10 @@ def patched_recorder(store: FakeStatisticsStore):
     executor = MagicMock()
     executor.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
     with (
-        patch("custom_components.dominionsc.coordinator.get_instance", return_value=executor),
+        patch(
+            "custom_components.dominionsc.coordinator.get_instance",
+            return_value=executor,
+        ),
         patch(
             "custom_components.dominionsc.coordinator.get_last_statistics",
             new=store.get_last_statistics,

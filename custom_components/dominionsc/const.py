@@ -17,7 +17,7 @@ truth and to avoid circular imports. Groupings:
 
 **Cost mode identifiers** (values for ``CONF_COST_MODE`` and ``CONF_GAS_COST_MODE``)
     :data:`COST_MODE_NONE`, :data:`COST_MODE_FIXED`,
-    :data:`COST_MODE_RATE_2`, :data:`COST_MODE_RATE_5`,
+    :data:`COST_MODE_RATE_1`, :data:`COST_MODE_RATE_2`, :data:`COST_MODE_RATE_5`,
     :data:`COST_MODE_RATE_6`, :data:`COST_MODE_RATE_7`,
     :data:`COST_MODE_RATE_8`, :data:`COST_MODE_RATE_32S`,
     :data:`COST_MODE_RATE_32V`
@@ -56,7 +56,7 @@ COMMON_NAME = "Dominion Energy SC"
 # Config-entry DATA keys  (entry.data — credentials, not user-configurable)
 # ---------------------------------------------------------------------------
 
-# Serialised TFA session token returned by the ``dominionsc`` library after a
+# Serialized TFA session token returned by the ``dominionsc`` library after a
 # successful two-factor authentication. Persisting it allows subsequent logins
 # to skip the TFA challenge entirely (the library handles the cookie exchange).
 # Set to ``None`` on the first login (before TFA has been completed).
@@ -80,7 +80,8 @@ CONF_PILOT_ID: Final = "pilot_id"
 # Config-entry OPTIONS keys  (entry.options — user-configurable via options flow)
 # ---------------------------------------------------------------------------
 
-# Which cost-calculation mode to use for electric. One of the COST_MODE_* constants below.
+# Which cost-calculation mode to use for electric. One of the COST_MODE_*
+# constants below.
 CONF_COST_MODE: Final = "cost_mode"
 
 # Which cost-calculation mode to use for gas. One of COST_MODE_NONE, COST_MODE_RATE_32S,
@@ -110,37 +111,19 @@ COST_MODE_NONE: Final = "none"
 # User-defined flat rate in $/kWh (value from CONF_FIXED_RATE).
 COST_MODE_FIXED: Final = "fixed"
 
-# Dominion Energy SC Rate Schedule 8 — Residential Service.
-# Tiered (first 800 kWh vs. over 800 kWh) with seasonal summer/winter rates.
-# Rate values are sourced from the dominion-sc-power library (RATE_8 plan).
-COST_MODE_RATE_8: Final = "rate_8"
-
-# Dominion Energy SC Rate Schedule 6 — Energy Saver / Conservation Rate.
-# Tiered with seasonal summer/winter rates.
-# Rate values are sourced from the dominion-sc-power library (RATE_6 plan).
-COST_MODE_RATE_6: Final = "rate_6"
-
-# Dominion Energy SC Rate Schedule 2 — Low Use Residential Service.
-# Flat rate electric plan for customers with limited monthly usage.
-COST_MODE_RATE_2: Final = "rate_2"
-
-# Dominion Energy SC Rate Schedule 5 — Time of Use.
-# TOU pricing: on-peak, super-off-peak, and off-peak periods (no demand charge).
-COST_MODE_RATE_5: Final = "rate_5"
-
-# Dominion Energy SC Rate Schedule 7 — Time-of-Use Demand.
-# TOU pricing identical to Rate 5 plus an on-peak billing demand charge.
-# The demand charge is NOT tracked in long-term statistics (requires billing-
-# period maximum demand, not summable interval data).
+# Rate plan cost modes. Each value equals the dominion-sc-power ``RatePlan.code``;
+# tariff details (tiers, seasons, eligibility) live in that library, and the
+# selectable plans are taken from its catalog (see :mod:`.rates`).
+COST_MODE_RATE_1: Final = "rate_1"  # Good Cents (closed to new customers)
+COST_MODE_RATE_2: Final = "rate_2"  # Low Use Residential
+COST_MODE_RATE_5: Final = "rate_5"  # Time of Use
+COST_MODE_RATE_6: Final = "rate_6"  # Energy Saver / Conservation
+# Time-of-Use Demand. The demand charge is NOT tracked in long-term statistics
+# (it needs billing-period maximum demand, not summable interval data).
 COST_MODE_RATE_7: Final = "rate_7"
-
-# Dominion Energy SC Rate Schedule 32S — Gas Residential Standard Service.
-# Flat rate gas plan ($/therm). Usage is measured in ft³; conversion: 1 therm = 100 ft³.
-COST_MODE_RATE_32S: Final = "rate_32s"
-
-# Dominion Energy SC Rate Schedule 32V — Gas Residential Value Service.
-# Flat rate gas plan ($/therm). Requires average summer usage ≥ 10 therms/month.
-COST_MODE_RATE_32V: Final = "rate_32v"
+COST_MODE_RATE_8: Final = "rate_8"  # Residential Service (default)
+COST_MODE_RATE_32S: Final = "rate_32s"  # Gas Standard Service
+COST_MODE_RATE_32V: Final = "rate_32v"  # Gas Value Service
 
 # ---------------------------------------------------------------------------
 # Default values
@@ -187,7 +170,7 @@ CURRENT_RATE_SCHEMA_VERSION: Final = 2
 
 def clean_service_addr(service_addr_account_no: str) -> str:
     """
-    Normalise a service-address / account number into a safe identifier fragment.
+    Normalize a service-address / account number into a safe identifier fragment.
 
     Used to build statistic IDs and device identifiers that must be safe for
     use in URLs, file paths, and HA's entity registry. The same transformation

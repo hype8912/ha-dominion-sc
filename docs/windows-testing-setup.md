@@ -226,7 +226,7 @@ With sockets working, tests fail with:
 
 ```text
 FileNotFoundError: [WinError 3] The system cannot find the path specified:
-    '__editable__.ha_dominion_sc-0.0.7.finder.__path_hook__'
+    '__editable__.ha_dominion_sc-0.1.0.finder.__path_hook__'
 ```
 
 The project had been installed as an **editable package** (`pip install -e .`).
@@ -235,7 +235,7 @@ placeholder path** into the namespace package's `__path__`:
 
 ```python
 NAMESPACES = {"custom_components": ["C:\\...\\custom_components"]}
-PATH_PLACEHOLDER = "__editable__.ha_dominion_sc-0.0.7.finder" + ".__path_hook__"
+PATH_PLACEHOLDER = "__editable__.ha_dominion_sc-0.1.0.finder" + ".__path_hook__"
 # __path__ ends up as [<real dir>, <PATH_PLACEHOLDER>]
 ```
 

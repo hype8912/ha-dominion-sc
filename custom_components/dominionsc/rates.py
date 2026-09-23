@@ -1,124 +1,62 @@
 """
 Adapter between HA cost-mode keys and the library's RatePlan objects.
 
-The rate definitions now live in the ``dominion-sc-power`` library
+The rate definitions live in the ``dominion-sc-power`` library
 (``dominionsc.rates``). This module is responsible only for:
 
-- Mapping ``COST_MODE_*`` string keys → :class:`dominionsc.RatePlan` objects
-  via :data:`RATE_PLAN_REGISTRY`.
-- Building the UI selector dict used by :mod:`.config_flow` and
-  :mod:`.options_flow` via :func:`build_cost_mode_choices`.
+- Exposing the library's residential catalogs keyed by ``COST_MODE_*`` string
+  via :data:`RATE_PLAN_REGISTRY` (electric) and :data:`GAS_RATE_PLAN_REGISTRY`
+  (gas). The library ``RatePlan.code`` values are the cost-mode keys, so
+  a plan added to the library appears here without any change.
+- Building the UI selector dicts used by :mod:`.config_flow` and
+  :mod:`.options_flow` via :func:`build_cost_mode_choices` and
+  :func:`build_gas_cost_mode_choices`. Labels come from ``RatePlan.name``.
 
-Adding a new rate plan
-----------------------
-1. Add a matching ``COST_MODE_*`` constant to :mod:`.const` whose value equals
-   the library ``RatePlan.code`` (e.g. ``COST_MODE_RATE_9 = "rate_9"``).
-2. Add the new constant to the ``RATE_PLAN_REGISTRY`` comprehension below.
-3. Add an entry to :func:`build_cost_mode_choices`.
-No other files need to change.
+A ``COST_MODE_*`` constant in :mod:`.const` is only needed for plans the
+integration refers to by name in code (e.g. the Rate 8 default).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
-
-from dominionsc import RatePlan, get_rate_plan
+from dominionsc import RESIDENTIAL_ELECTRIC_RATE_PLANS, RESIDENTIAL_GAS_RATE_PLANS, RatePlan
 
 from .const import (
     COST_MODE_FIXED,
     COST_MODE_NONE,
+    COST_MODE_RATE_1,
     COST_MODE_RATE_2,
-    COST_MODE_RATE_32S,
-    COST_MODE_RATE_32V,
     COST_MODE_RATE_5,
     COST_MODE_RATE_6,
     COST_MODE_RATE_7,
     COST_MODE_RATE_8,
 )
 
-@dataclass(frozen=True)
-class _HistoricalTieredRate:
-    """
-    Internal representation of a superseded tariff period not in the library.
+# Electric plans available for cost calculation, keyed by cost-mode string.
+RATE_PLAN_REGISTRY: dict[str, RatePlan] = dict(RESIDENTIAL_ELECTRIC_RATE_PLANS)
 
-    Cost calculation in :mod:`.cost` uses these values to price historical
-    intervals that were in effect before the library's current ``RatePlan``
-    became effective. All $/Wh fields are already converted from the source
-    $/kWh values so the cost engine can multiply directly against Wh usage.
-    """
+# Gas plans available for cost calculation, keyed by cost-mode string.
+GAS_RATE_PLAN_REGISTRY: dict[str, RatePlan] = dict(RESIDENTIAL_GAS_RATE_PLANS)
 
-    effective_from: date
-    effective_to: date
-    summer_boundary_wh: float  # Wh at which the upper tier begins
-    summer_under_per_wh: float  # $/Wh for usage at or below boundary (summer)
-    summer_over_per_wh: float  # $/Wh for usage above boundary (summer)
-    winter_boundary_wh: float  # Wh at which the upper tier begins
-    winter_under_per_wh: float  # $/Wh for usage at or below boundary (winter)
-    winter_over_per_wh: float  # $/Wh for usage above boundary (winter)
-
-
-# Rate 8 tariff values that were in effect from 2025-07-23 to 2026-06-30.
-# These are NOT in the dominion-sc-power library; they are preserved here so
-# that historical cost statistics can be re-priced correctly on request.
-_RATE_8_2025 = _HistoricalTieredRate(
-    effective_from=date(2025, 7, 23),
-    effective_to=date(2026, 6, 30),
-    summer_boundary_wh=800_000,
-    summer_under_per_wh=0.14599 / 1000,
-    summer_over_per_wh=0.15983 / 1000,
-    winter_boundary_wh=800_000,
-    winter_under_per_wh=0.14599 / 1000,
-    winter_over_per_wh=0.14045 / 1000,
+# Plans shown first in the selector, most common first; any other library plan
+# follows in catalog order.
+_ELECTRIC_DISPLAY_ORDER: tuple[str, ...] = (
+    COST_MODE_RATE_8,
+    COST_MODE_RATE_6,
+    COST_MODE_RATE_5,
+    COST_MODE_RATE_7,
+    COST_MODE_RATE_2,
 )
 
-# Rate 6 tariff values that were in effect from 2025-07-23 to 2026-06-30.
-_RATE_6_2025 = _HistoricalTieredRate(
-    effective_from=date(2025, 7, 23),
-    effective_to=date(2026, 6, 30),
-    summer_boundary_wh=800_000,
-    summer_under_per_wh=0.14164 / 1000,
-    summer_over_per_wh=0.15505 / 1000,
-    winter_boundary_wh=800_000,
-    winter_under_per_wh=0.14164 / 1000,
-    winter_over_per_wh=0.13628 / 1000,
-)
-
-# Historical rate registry — keyed by cost-mode constant, value is an ordered
-# list of _HistoricalTieredRate entries (ascending by effective_from).
-# cost.py iterates this list to find which historical period covers a given
-# interval date before falling through to the current library RatePlan.
-HISTORICAL_RATE_REGISTRY: dict[str, list[_HistoricalTieredRate]] = {
-    COST_MODE_RATE_8: [_RATE_8_2025],
-    COST_MODE_RATE_6: [_RATE_6_2025],
-}
-
-# Maps each supported cost-mode key to the corresponding library RatePlan.
-# Keys must equal the RatePlan.code field so get_rate_plan(key) resolves them.
-# Only plans that are currently supported for cost calculation are included;
-# unknown codes are silently omitted by the comprehension.
-RATE_PLAN_REGISTRY: dict[str, RatePlan] = {
-    mode: plan
-    for mode in (
-        COST_MODE_RATE_8,
-        COST_MODE_RATE_6,
-        COST_MODE_RATE_5,
-        COST_MODE_RATE_7,
-        COST_MODE_RATE_2,
-    )
-    if (plan := get_rate_plan(mode)) is not None
+# Integration-specific notes appended to the library plan name.
+_LABEL_SUFFIXES: dict[str, str] = {
+    COST_MODE_RATE_7: " (energy cost only)",  # demand charge is not tracked
+    COST_MODE_RATE_1: " (closed to new customers)",
 }
 
 
-# Maps each supported gas cost-mode key to the corresponding library RatePlan.
-# Keyed by COST_MODE_RATE_32S / COST_MODE_RATE_32V. Only plans that are
-# currently available in the library are included (unknown codes are silently
-# omitted by the comprehension).
-GAS_RATE_PLAN_REGISTRY: dict[str, RatePlan] = {
-    mode: plan
-    for mode in (COST_MODE_RATE_32S, COST_MODE_RATE_32V)
-    if (plan := get_rate_plan(mode)) is not None
-}
+def _plan_label(code: str, plan: RatePlan) -> str:
+    """Return the selector label for *plan*: library name plus any HA-specific note."""
+    return f"{plan.name}{_LABEL_SUFFIXES.get(code, '')}"
 
 
 def build_cost_mode_choices() -> dict[str, str]:
@@ -126,20 +64,18 @@ def build_cost_mode_choices() -> dict[str, str]:
     Build the ordered cost-mode selector dict used by ConfigFlow and OptionsFlow.
 
     Returns a mapping of ``{cost_mode_key: display_label}`` in the order they
-    should appear in the UI selector: None first, then rate plans in logical
-    order, then Fixed Rate last.
+    should appear in the UI selector: None first, then rate plans (common
+    plans first, the rest in library order), then Fixed Rate last.
 
     Returns:
         Ordered dict suitable for passing to a HA ``SelectSelector``.
 
     """
+    preferred: list[str] = [code for code in _ELECTRIC_DISPLAY_ORDER if code in RATE_PLAN_REGISTRY]
+    remaining: list[str] = [code for code in RATE_PLAN_REGISTRY if code not in preferred]
     return {
         COST_MODE_NONE: "None (no cost calculation)",
-        COST_MODE_RATE_8: "Rate 8 - Residential Service",
-        COST_MODE_RATE_6: "Rate 6 - Energy Saver / Conservation Rate",
-        COST_MODE_RATE_5: "Rate 5 - Time of Use",
-        COST_MODE_RATE_7: "Rate 7 - Time-of-Use Demand (energy cost only)",
-        COST_MODE_RATE_2: "Rate 2 - Low Use Residential Service",
+        **{code: _plan_label(code, RATE_PLAN_REGISTRY[code]) for code in (*preferred, *remaining)},
         COST_MODE_FIXED: "Fixed Rate (custom $/kWh)",
     }
 
@@ -157,6 +93,5 @@ def build_gas_cost_mode_choices() -> dict[str, str]:
     """
     return {
         COST_MODE_NONE: "None (no cost calculation)",
-        COST_MODE_RATE_32S: "Rate 32S - Gas Standard Service",
-        COST_MODE_RATE_32V: "Rate 32V - Gas Value Service",
+        **{code: _plan_label(code, plan) for code, plan in GAS_RATE_PLAN_REGISTRY.items()},
     }

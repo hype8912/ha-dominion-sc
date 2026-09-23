@@ -16,6 +16,7 @@ mocked ``async_get_usage_reads`` responses, and assert on ``store.rows``.
 """
 
 from datetime import date, datetime, timedelta
+from typing import Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,8 +53,8 @@ class _FixedDate(date):
     """
 
     @classmethod
-    def today(cls) -> date:
-        return FIXED_TODAY
+    def today(cls) -> Self:
+        return cls(FIXED_TODAY.year, FIXED_TODAY.month, FIXED_TODAY.day)
 
 
 def _hourly_reads(day: date, num_days: int, wh_per_hour: float = 1000.0) -> list[UsageRead]:
@@ -73,12 +74,13 @@ def _hourly_reads(day: date, num_days: int, wh_per_hour: float = 1000.0) -> list
     return reads
 
 
-def _make_coordinator(
-    hass: HomeAssistant, entry: MockConfigEntry, forecast: Forecast
-) -> DominionSCCoordinator:
+def _make_coordinator(hass: HomeAssistant, entry: MockConfigEntry, forecast: Forecast) -> DominionSCCoordinator:
     entry.add_to_hass(hass)
     with (
-        patch("custom_components.dominionsc.coordinator.create_cookie_jar", return_value=MagicMock()),
+        patch(
+            "custom_components.dominionsc.coordinator.create_cookie_jar",
+            return_value=MagicMock(),
+        ),
         patch(
             "custom_components.dominionsc.coordinator.async_create_clientsession",
             return_value=MagicMock(),
@@ -105,9 +107,7 @@ def entry() -> MockConfigEntry:
     )
 
 
-async def test_multi_poll_gap_fill_converges(
-    hass: HomeAssistant, entry: MockConfigEntry
-) -> None:
+async def test_multi_poll_gap_fill_converges(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     """Three polls, each seeing more of the backlog, converge to one clean series.
 
     Poll 1 sees only 3 published days (initial backfill). Poll 2 sees a 4th
@@ -138,9 +138,7 @@ async def test_multi_poll_gap_fill_converges(
         ),
     ):
         for published_days in (3, 4, 5):
-            coord.api.async_get_usage_reads = AsyncMock(
-                return_value=_hourly_reads(billing_start, published_days)
-            )
+            coord.api.async_get_usage_reads = AsyncMock(return_value=_hourly_reads(billing_start, published_days))
             await coord._async_update_data()
             assert store.row_count(stat_id) == published_days * 24
             assert store.last_sum(stat_id) == published_days * 24 * 1000.0
@@ -149,9 +147,7 @@ async def test_multi_poll_gap_fill_converges(
         assert len(starts) == len(set(starts)), "an hour was inserted more than once"
 
 
-async def test_recalculation_prices_real_consumption_rows(
-    hass: HomeAssistant, entry: MockConfigEntry
-) -> None:
+async def test_recalculation_prices_real_consumption_rows(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     """A fixed-rate recalculation run against real backfilled consumption
     produces the expected cumulative cost, exercising the full
     ``async_recalculate_historic_costs`` path against a real (fake) store
@@ -177,9 +173,7 @@ async def test_recalculation_prices_real_consumption_rows(
         ),
     ):
         # Backfill 3 days of consumption (1000 Wh/hour) with no cost mode yet.
-        coord.api.async_get_usage_reads = AsyncMock(
-            return_value=_hourly_reads(billing_start, 3)
-        )
+        coord.api.async_get_usage_reads = AsyncMock(return_value=_hourly_reads(billing_start, 3))
         await coord._async_update_data()
         assert store.row_count(consumption_id) == 3 * 24
 

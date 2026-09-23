@@ -23,8 +23,10 @@ continue to resolve. See docs/REFACTOR_PLAN.md Phase 2.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from datetime import datetime, time
+from decimal import Decimal
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from dominionsc import (
@@ -35,11 +37,9 @@ from dominionsc import (
     Season,
     TieredUsageCharge,
     TimeOfUseCharge,
+    get_rate_plan_for_date,
+    get_rate_plan_history,
 )
-
-_LOGGER = logging.getLogger(__name__)
-
-_UTILITY_TZ = ZoneInfo("America/New_York")
 
 from .const import (
     CONF_COST_MODE,
@@ -50,24 +50,20 @@ from .const import (
     COST_MODE_RATE_8,
     DEFAULT_FIXED_RATE,
 )
-from .rates import (
-    GAS_RATE_PLAN_REGISTRY,
-    HISTORICAL_RATE_REGISTRY,
-    RATE_PLAN_REGISTRY,
-    _HistoricalTieredRate,
-)
+from .rates import GAS_RATE_PLAN_REGISTRY, RATE_PLAN_REGISTRY
 
-if TYPE_CHECKING:
-    pass
+_LOGGER = logging.getLogger(__name__)
+
+_UTILITY_TZ = ZoneInfo("America/New_York")
 
 
 def _resolve_cost_config(
-    options: dict[str, Any],
+    options: Mapping[str, Any],
 ) -> tuple[str, float, RatePlan | None]:
     """
     Unpack cost configuration from an options dict with safe defaults.
 
-    Centralises the options-→-typed-values conversion so every part of the
+    Centralizes the options-→-typed-values conversion so every part of the
     codebase that needs cost config gets identical defaults.
 
     Args:
@@ -76,7 +72,7 @@ def _resolve_cost_config(
     Returns:
         A 3-tuple:
         - ``cost_mode`` (str): one of the ``COST_MODE_*`` constants. Defaults
-          to ``COST_MODE_RATE_8`` when no mode is stored (first-run behaviour
+          to ``COST_MODE_RATE_8`` when no mode is stored (first-run behavior
           before the user has gone through the options flow).
         - ``fixed_rate`` (float): the user-supplied $/kWh rate. Defaults to
           ``DEFAULT_FIXED_RATE``. Only relevant when ``cost_mode`` is
@@ -110,7 +106,7 @@ def _calculate_tiered_cost(
     Args:
         interval_wh:       Wh consumed in this interval.
         interval_dt:       Start timestamp of the interval; its month determines
-                           summer (May–Sep) vs. winter (Oct–Apr) season.
+                           summer (May-Sep) vs. winter (Oct-Apr) season.
         cumulative_wh_before: Total Wh consumed before this interval in the
                            current billing cycle. Used for tier-boundary splits.
         rate_plan:         Library :class:`~dominionsc.RatePlan` containing the
@@ -128,7 +124,9 @@ def _calculate_tiered_cost(
         tiers = charge.tiers_by_season[season]
         # tiers[0] is the lower tier (upper_bound is the boundary in kWh);
         # tiers[1] is the upper tier (upper_bound is None = unbounded).
-        boundary_wh = float(tiers[0].upper_bound) * 1000  # kWh → Wh
+        upper_bound: Decimal | None = tiers[0].upper_bound
+        assert upper_bound is not None  # lower tier is always bounded
+        boundary_wh = float(upper_bound) * 1000  # kWh → Wh
         rate_under = float(tiers[0].price_per_unit) / 1000  # $/kWh → $/Wh
         rate_over = float(tiers[1].price_per_unit) / 1000
 
@@ -147,53 +145,6 @@ def _calculate_tiered_cost(
     return 0.0
 
 
-def _calculate_historical_tiered_cost(
-    interval_wh: float,
-    interval_dt: datetime,
-    cumulative_wh_before: float,
-    hist: _HistoricalTieredRate,
-) -> float:
-    """
-    Calculate cost for a single Wh interval using a superseded tariff period.
-
-    Used for intervals that fall between ``hist.effective_from`` and
-    ``hist.effective_to`` — i.e. periods where the library's current
-    ``RatePlan`` was not yet in effect and the old rates apply.
-
-    Args:
-        interval_wh:          Wh consumed in this interval.
-        interval_dt:          Start timestamp; its month determines season.
-        cumulative_wh_before: Wh consumed before this interval in the cycle.
-        hist:                 The :class:`~.rates._HistoricalTieredRate` whose
-                              ``effective_from``/``effective_to`` bracket this
-                              interval's date.
-
-    Returns:
-        Cost in dollars.
-
-    """
-    is_summer = 5 <= interval_dt.month <= 9
-    if is_summer:
-        boundary = hist.summer_boundary_wh
-        rate_under = hist.summer_under_per_wh
-        rate_over = hist.summer_over_per_wh
-    else:
-        boundary = hist.winter_boundary_wh
-        rate_under = hist.winter_under_per_wh
-        rate_over = hist.winter_over_per_wh
-
-    cumulative_after = cumulative_wh_before + interval_wh
-
-    if cumulative_after <= boundary:
-        return interval_wh * rate_under
-    if cumulative_wh_before >= boundary:
-        return interval_wh * rate_over
-
-    wh_under = boundary - cumulative_wh_before
-    wh_over = interval_wh - wh_under
-    return wh_under * rate_under + wh_over * rate_over
-
-
 def _rate_plan_is_tiered(rate_plan: RatePlan) -> bool:
     """Return True if *rate_plan* contains a ``TieredUsageCharge``."""
     return any(isinstance(c, TieredUsageCharge) for c in rate_plan.charges)
@@ -210,7 +161,7 @@ def _rate_plan_has_demand(rate_plan: RatePlan) -> bool:
 
 
 def _rate_plan_is_flat(rate_plan: RatePlan) -> bool:
-    """Return True if *rate_plan* contains a ``FlatUsageCharge`` (Rate 2 or gas plans)."""
+    """Return True if *rate_plan* has a ``FlatUsageCharge`` (Rate 2 or gas plans)."""
     return any(isinstance(c, FlatUsageCharge) for c in rate_plan.charges)
 
 
@@ -245,15 +196,14 @@ def _calculate_flat_cost(
             # interval_usage is in ft³; 1 therm = 100 ft³
             therms = interval_usage / 100.0
             return therms * float(charge.price_per_unit)
-        else:
-            # Electric flat rate (Rate 2): interval_usage is in Wh
-            kwh = interval_usage / 1000.0
-            return kwh * float(charge.price_per_unit)
+        # Electric flat rate (Rate 2): interval_usage is in Wh
+        kwh = interval_usage / 1000.0
+        return kwh * float(charge.price_per_unit)
     return 0.0
 
 
 def _resolve_gas_cost_config(
-    options: dict[str, Any],
+    options: Mapping[str, Any],
 ) -> tuple[str, RatePlan | None]:
     """
     Unpack gas cost configuration from an options dict with safe defaults.
@@ -270,10 +220,10 @@ def _resolve_gas_cost_config(
           is stored (no gas cost calculation by default).
         - ``gas_rate_plan`` (:class:`dominionsc.RatePlan` | ``None``):
           the library rate plan for the selected gas mode, or ``None`` for
-          ``COST_MODE_NONE`` or an unrecognised key.
+          ``COST_MODE_NONE`` or an unrecognized key.
 
     """
-    gas_cost_mode = options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
+    gas_cost_mode: Any = options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
     gas_rate_plan: RatePlan | None = GAS_RATE_PLAN_REGISTRY.get(gas_cost_mode)
     return gas_cost_mode, gas_rate_plan
 
@@ -309,8 +259,7 @@ def _calculate_tou_cost(
     """
     if _rate_plan_has_demand(rate_plan):
         _LOGGER.debug(
-            "Rate plan '%s' includes a demand charge that cannot be "
-            "calculated from interval data — skipping demand component.",
+            "Rate plan '%s' includes a demand charge that cannot be calculated from interval data — skipping demand component.",
             rate_plan.code,
         )
 
@@ -321,27 +270,43 @@ def _calculate_tou_cost(
         season = Season.SUMMER if 5 <= interval_dt.month <= 9 else Season.WINTER
         periods = charge.periods_by_season[season]
 
-        local_dt = interval_dt.astimezone(_UTILITY_TZ)
-        local_time = local_dt.time().replace(second=0, microsecond=0)
+        local_dt: datetime = interval_dt.astimezone(_UTILITY_TZ)
+        local_time: time = local_dt.time().replace(second=0, microsecond=0)
 
         fallback_price = None
         for period in periods:
             if period.fallback:
-                fallback_price = period.price_per_unit
+                fallback_price: Decimal = period.price_per_unit
                 continue
             for window in period.windows:
                 if window.start <= window.end:
                     # Normal (non-crossing) window: [start, end)
-                    matched = window.start <= local_time < window.end
+                    matched: bool = window.start <= local_time < window.end
                 else:
-                    # Midnight-crossing window: [start, 24:00) ∪ [00:00, end)
-                    matched = local_time >= window.start or local_time < window.end
+                    # Midnight-crossing window: [start, 24:00) U [00:00, end)
+                    matched: bool = local_time >= window.start or local_time < window.end
                 if matched:
                     return interval_wh * float(period.price_per_unit) / 1000
 
         if fallback_price is not None:
             return interval_wh * float(fallback_price) / 1000
 
+    return 0.0
+
+
+def _calculate_plan_cost(
+    interval_wh: float,
+    interval_dt: datetime,
+    cumulative_wh_before: float,
+    rate_plan: RatePlan,
+) -> float:
+    """Dispatch to the tiered, TOU, or flat calculator for *rate_plan*."""
+    if _rate_plan_is_tiered(rate_plan):
+        return _calculate_tiered_cost(interval_wh, interval_dt, cumulative_wh_before, rate_plan)
+    if _rate_plan_is_tou(rate_plan):
+        return _calculate_tou_cost(interval_wh, interval_dt, rate_plan)
+    if _rate_plan_is_flat(rate_plan):
+        return _calculate_flat_cost(interval_wh, rate_plan)
     return 0.0
 
 
@@ -364,11 +329,10 @@ def _calculate_cost_for_wh(
 
     Decision tree:
         1. ``COST_MODE_NONE``  → always returns 0.0.
-        2. ``COST_MODE_FIXED`` → flat multiplication: Wh × (rate_$/kWh / 1000).
-        3. Known rate plan    → checks ``HISTORICAL_RATE_REGISTRY`` first; if
-           the interval falls within a superseded tariff period, delegates to
-           :func:`_calculate_historical_tiered_cost`. Otherwise, if the interval
-           is on or after ``rate_plan.effective_from``, dispatches to
+        2. ``COST_MODE_FIXED`` → flat multiplication: Wh x (rate_$/kWh / 1000).
+        3. Known rate plan    → asks the library for the plan in effect on the
+           interval's date (``dominionsc.get_rate_plan_for_date``), which may be
+           a superseded tariff period, then dispatches to
            :func:`_calculate_tiered_cost` (tiered plans),
            :func:`_calculate_tou_cost` (TOU plans), or
            :func:`_calculate_flat_cost` (flat plans — Rate 2 electric, Rate 32S/32V
@@ -403,39 +367,21 @@ def _calculate_cost_for_wh(
         return 0.0
 
     if cost_mode == COST_MODE_FIXED:
-        # Convert: Wh × ($/kWh ÷ 1000 Wh/kWh) = $
+        # Convert: Wh x ($/kWh ÷ 1000 Wh/kWh) = $
         return interval_wh * (fixed_rate / 1000)
 
     if rate_plan is not None:
+        # The library knows every tariff period for this plan; pick the one in
+        # effect on the interval's date (superseded periods included).
         interval_date = interval_dt.date()
+        if get_rate_plan_history(rate_plan.code):
+            plan_for_date: RatePlan | None = get_rate_plan_for_date(rate_plan.code, interval_date)
+        else:
+            # Plan is not in the library catalog: price it as given once in effect.
+            plan_for_date: RatePlan | None = rate_plan if interval_date >= rate_plan.effective_from else None
+        if plan_for_date is not None:
+            return _calculate_plan_cost(interval_wh, interval_dt, cumulative_wh_before, plan_for_date)
 
-        # Check historical rate periods first. For each superseded tariff entry
-        # that brackets this interval's date, delegate to the historical
-        # calculation. The list is ordered ascending by effective_from so the
-        # first match wins (no overlap between historical periods).
-        for hist in HISTORICAL_RATE_REGISTRY.get(cost_mode, []):
-            if hist.effective_from <= interval_date <= hist.effective_to:
-                return _calculate_historical_tiered_cost(
-                    interval_wh, interval_dt, cumulative_wh_before, hist
-                )
-
-        # No historical period matched — use the current library plan if the
-        # interval is on or after its effective date.
-        if interval_date >= rate_plan.effective_from:
-            if _rate_plan_is_tiered(rate_plan):
-                return _calculate_tiered_cost(
-                    interval_wh,
-                    interval_dt,
-                    cumulative_wh_before,
-                    rate_plan,
-                )
-            if _rate_plan_is_tou(rate_plan):
-                return _calculate_tou_cost(interval_wh, interval_dt, rate_plan)
-            if _rate_plan_is_flat(rate_plan):
-                return _calculate_flat_cost(interval_wh, rate_plan)
-
-        # Interval predates all known rate periods → no cost.
-        return 0.0
-
-    # Unknown mode or None plan — produce no cost rather than raising.
+    # Interval predates all known rate periods, or cost_mode/rate_plan is
+    # unrecognized — produce no cost rather than raising.
     return 0.0

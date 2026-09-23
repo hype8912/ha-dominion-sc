@@ -33,25 +33,34 @@ producing duplicate or out-of-order statistics rows.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import voluptuous as vol
 from dominionsc.const import BIDGELY_PILOT_ID
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import statistics_during_period, StatisticsRow
 from homeassistant.config_entries import ConfigEntry, ConfigFlowResult, OptionsFlow
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_COST_MODE,
     CONF_FIXED_RATE,
     CONF_GAS_COST_MODE,
     CONF_PILOT_ID,
+    CONF_SERVICE_ADDR,
     COST_MODE_FIXED,
     COST_MODE_NONE,
     COST_MODE_RATE_8,
     DEFAULT_FIXED_RATE,
     DOMAIN,
 )
-from .rates import RATE_PLAN_REGISTRY, build_cost_mode_choices, build_gas_cost_mode_choices
+from .rates import (
+    RATE_PLAN_REGISTRY,
+    build_cost_mode_choices,
+    build_gas_cost_mode_choices,
+)
+from .statistics_ids import _build_statistic_ids
 
 CONF_RECALCULATE_HISTORY = "recalculate_history"
 CONF_RECALC_START_DATE = "recalc_start_date"
@@ -96,7 +105,7 @@ class DominionSCOptionsFlow(OptionsFlow):
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         """
-        Initialise the options flow.
+        Initialize the options flow.
 
         Args:
             config_entry: The existing config entry being configured. Its
@@ -110,9 +119,7 @@ class DominionSCOptionsFlow(OptionsFlow):
         # Accumulates the new options to be saved when the flow completes.
         self._new_options: dict[str, Any] = {}
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 1: Select cost calculation mode.
 
@@ -142,20 +149,14 @@ class DominionSCOptionsFlow(OptionsFlow):
             )
 
         # Determine if a GAS account is present (only possible after first poll).
-        has_gas = (
-            coordinator is not None
-            and coordinator.data is not None
-            and "GAS" in coordinator.data.accounts
-        )
+        has_gas = coordinator is not None and coordinator.data is not None and "GAS" in coordinator.data.accounts
 
         if user_input is not None:
             self._selected_mode = user_input[CONF_COST_MODE]
 
             # Always capture gas cost mode when GAS is present.
             if has_gas:
-                self._new_options[CONF_GAS_COST_MODE] = user_input.get(
-                    CONF_GAS_COST_MODE, COST_MODE_NONE
-                )
+                self._new_options[CONF_GAS_COST_MODE] = user_input.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
 
             # pilot_id lives in entry.data (it's a connection parameter for the
             # API client, like credentials) rather than entry.options. Update
@@ -163,16 +164,12 @@ class DominionSCOptionsFlow(OptionsFlow):
             # DominionSC client with the new value -- unlike cost-mode options,
             # a plain async_request_refresh() would keep using the stale client.
             new_pilot_id = user_input.get(CONF_PILOT_ID, BIDGELY_PILOT_ID)
-            if new_pilot_id != self._config_entry.data.get(
-                CONF_PILOT_ID, BIDGELY_PILOT_ID
-            ):
+            if new_pilot_id != self._config_entry.data.get(CONF_PILOT_ID, BIDGELY_PILOT_ID):
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
                     data={**self._config_entry.data, CONF_PILOT_ID: new_pilot_id},
                 )
-                self.hass.config_entries.async_schedule_reload(
-                    self._config_entry.entry_id
-                )
+                self.hass.config_entries.async_schedule_reload(self._config_entry.entry_id)
 
             if self._selected_mode == COST_MODE_FIXED:
                 return await self.async_step_fixed_rate()
@@ -184,16 +181,11 @@ class DominionSCOptionsFlow(OptionsFlow):
             # would then never get priced (see coordinator.py's
             # _async_recalculate_historic_costs_locked docstring).
             gas_mode_selected = self._new_options.get(CONF_GAS_COST_MODE, COST_MODE_NONE)
-            if (
-                self._selected_mode in RATE_PLAN_REGISTRY
-                or gas_mode_selected != COST_MODE_NONE
-            ):
+            if self._selected_mode in RATE_PLAN_REGISTRY or gas_mode_selected != COST_MODE_NONE:
                 self._new_options[CONF_COST_MODE] = self._selected_mode
                 return await self.async_step_recalculate_history()
             # Neither commodity has a priced mode - nothing to recalculate.
-            return self.async_create_entry(
-                title="", data={CONF_COST_MODE: COST_MODE_NONE, **self._new_options}
-            )
+            return self.async_create_entry(title="", data={CONF_COST_MODE: COST_MODE_NONE, **self._new_options})
 
         current_options = self._config_entry.options
         mode_choices = build_cost_mode_choices()
@@ -222,9 +214,7 @@ class DominionSCOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(schema_dict),
         )
 
-    async def async_step_fixed_rate(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_fixed_rate(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 2a: Collect the custom $/kWh rate for fixed-rate mode.
 
@@ -246,17 +236,13 @@ class DominionSCOptionsFlow(OptionsFlow):
                 {
                     vol.Required(
                         CONF_FIXED_RATE,
-                        default=current_options.get(
-                            CONF_FIXED_RATE, DEFAULT_FIXED_RATE
-                        ),
+                        default=current_options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE),
                     ): vol.Coerce(float),
                 }
             ),
         )
 
-    async def async_step_recalculate_history(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_recalculate_history(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 3: Ask whether to recalculate historic cost records.
 
@@ -274,9 +260,9 @@ class DominionSCOptionsFlow(OptionsFlow):
             # No recalculation requested — save options and finish
             return self.async_create_entry(title="", data=self._new_options)
 
-        old_mode = self._config_entry.options.get(CONF_COST_MODE, COST_MODE_RATE_8)
-        new_mode = self._new_options.get(CONF_COST_MODE, COST_MODE_RATE_8)
-        mode_changed = old_mode != new_mode
+        old_mode: Any = self._config_entry.options.get(CONF_COST_MODE, COST_MODE_RATE_8)
+        new_mode: Any = self._new_options.get(CONF_COST_MODE, COST_MODE_RATE_8)
+        mode_changed: Any = old_mode != new_mode
 
         return self.async_show_form(
             step_id="recalculate_history",
@@ -294,15 +280,73 @@ class DominionSCOptionsFlow(OptionsFlow):
             },
         )
 
-    async def async_step_recalculate_date_range(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def _async_earliest_consumption_date(self) -> date | None:
+        """
+        Find the earliest recorded consumption date for whichever account(s)
+        are being recalculated this flow.
+
+        Used to default the date-range picker's start date to the full
+        available history, rather than an easy-to-under-scope "1st of this
+        month". That default previously caused a real bug: a user enabling a
+        gas rate plan mid-cycle recalculated only the current billing
+        cycle's few hours, silently leaving over a year of already-recorded
+        gas consumption unpriced (see coordinator.py's
+        ``_async_recalculate_historic_costs_locked`` docstring for the full
+        story of why already-recorded hours never get priced by normal
+        polling and must go through recalculation).
+
+        Queries with ``period="month"`` so the recorder pre-aggregates to
+        roughly one row per month of history instead of one per hour --
+        cheap even for a year-plus of data.
+
+        Returns:
+            The earliest date with recorded consumption, or ``None`` if the
+            service address is unknown or no consumption has been recorded
+            yet for the relevant account(s) (falls back to the 1st of the
+            current month in that case).
+
+        """
+        canonical_addr = self._config_entry.data.get(CONF_SERVICE_ADDR)
+        if not canonical_addr:
+            return None
+
+        consumption_ids: set[str] = set()
+        if self._selected_mode != COST_MODE_NONE:
+            consumption_ids.add(_build_statistic_ids(canonical_addr, "ELECTRIC")[0])
+        if self._new_options.get(CONF_GAS_COST_MODE, COST_MODE_NONE) != COST_MODE_NONE:
+            consumption_ids.add(_build_statistic_ids(canonical_addr, "GAS")[0])
+        if not consumption_ids:
+            return None
+
+        rows: dict[str, list[StatisticsRow]] = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            datetime(2000, 1, 1, tzinfo=dt_util.UTC),
+            dt_util.utcnow(),
+            consumption_ids,
+            "month",
+            None,
+            {"start"},
+        )
+        starts: list[float] = [
+            row["start"] if isinstance(row["start"], (int, float)) else row["start"].timestamp()
+            for series in rows.values()
+            for row in series
+        ]
+        if not starts:
+            return None
+        return datetime.fromtimestamp(min(starts), tz=dt_util.UTC).date()
+
+    async def async_step_recalculate_date_range(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """
         Step 4: Select the start and end dates for historic cost recalculation.
 
         Collects ISO-format date strings (YYYY-MM-DD) for the recalculation
-        window. Default start date is the first day of the current month;
-        default end date is yesterday (today's data is never complete).
+        window. Default start date is the earliest recorded consumption for
+        the account(s) being recalculated (see
+        :meth:`_async_earliest_consumption_date`), falling back to the 1st of
+        the current month if that can't be determined; default end date is
+        yesterday (today's data is never complete).
 
         Validation:
         - Both values must parse as valid ISO dates.
@@ -343,7 +387,7 @@ class DominionSCOptionsFlow(OptionsFlow):
                     return self.async_create_entry(title="", data=self._new_options)
 
         today = date.today()
-        default_start = date(today.year, today.month, 1)
+        default_start = await self._async_earliest_consumption_date() or date(today.year, today.month, 1)
 
         return self.async_show_form(
             step_id="recalculate_date_range",

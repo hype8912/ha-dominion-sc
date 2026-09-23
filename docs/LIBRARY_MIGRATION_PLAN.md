@@ -1,9 +1,12 @@
 # Library Migration Plan — `ha-dominion-sc`
 
-**Status:** Not started  
-**Written against:** `dominion-sc-power` new public API (effective 2026-07-01 rate plans)  
-**Current HA version:** 0.0.7  
-**Target HA version:** 0.1.0  
+**Status:** Implemented (Phases 1-8). This document is kept as a historical
+record of the migration; see [DEVELOPER.md](DEVELOPER.md) for current behavior.
+Since it was written, Rate 1 (Good Cents) has been added and the superseded
+2025 tariff periods described in Phase 2 and Appendix B moved into the library.
+**Written against:** `dominion-sc-power` new public API (effective 2026-07-01 rate plans)
+**Current HA version:** 0.0.7
+**Target HA version:** 0.1.0
 **Test baseline entering this work:** 163 tests, 100% line and branch coverage
 
 ---
@@ -125,18 +128,13 @@ from .const import (
 # Keys must match the `code` field of the corresponding RatePlan
 # (e.g. "rate_8" maps to RATE_8 whose code == "rate_8").
 RATE_PLAN_REGISTRY: dict[str, object] = {
-    mode: get_rate_plan(mode)
-    for mode in (COST_MODE_RATE_6, COST_MODE_RATE_8)
-    if get_rate_plan(mode) is not None
+    mode: get_rate_plan(mode) for mode in (COST_MODE_RATE_6, COST_MODE_RATE_8) if get_rate_plan(mode) is not None
 }
 
 
 def build_cost_mode_choices() -> dict[str, str]:
     """Build ordered cost-mode selector for ConfigFlow / OptionsFlow."""
-    tiered_choices = {
-        mode: plan.name
-        for mode, plan in RATE_PLAN_REGISTRY.items()
-    }
+    tiered_choices = {mode: plan.name for mode, plan in RATE_PLAN_REGISTRY.items()}
     return {
         COST_MODE_NONE: "None (no cost calculation)",
         **tiered_choices,
@@ -170,6 +168,7 @@ Update the type annotation and the registry lookup:
 ```python
 from dominionsc import RatePlan
 from .rates import RATE_PLAN_REGISTRY
+
 
 def _resolve_cost_config(options):
     cost_mode = options.get(CONF_COST_MODE, COST_MODE_RATE_8)
@@ -208,9 +207,7 @@ def _calculate_tiered_cost(
     for charge in rate_plan.charges:
         if not isinstance(charge, TieredUsageCharge):
             continue
-        season = (
-            Season.SUMMER if 5 <= interval_dt.month <= 9 else Season.WINTER
-        )
+        season = Season.SUMMER if 5 <= interval_dt.month <= 9 else Season.WINTER
         tiers = charge.tiers_by_season[season]
         # boundary is in kWh (Decimal); convert to Wh for comparison
         boundary_wh = float(tiers[0].upper_bound or 0) * 1000
@@ -222,10 +219,7 @@ def _calculate_tiered_cost(
             return interval_wh * float(tiers[1].price_per_unit) / 1000
         wh_under = boundary_wh - cumulative_wh_before
         wh_over = interval_wh - wh_under
-        return (
-            wh_under * float(tiers[0].price_per_unit) / 1000
-            + wh_over * float(tiers[1].price_per_unit) / 1000
-        )
+        return wh_under * float(tiers[0].price_per_unit) / 1000 + wh_over * float(tiers[1].price_per_unit) / 1000
     return 0.0
 ```
 
@@ -299,6 +293,12 @@ statistics computed at the old (now-superseded) rates. This phase:
 
 ### 2.1 — Add Historical Rate Constants to `rates.py`
 
+> **Superseded:** the internal `_HistoricalTieredRate` / `HISTORICAL_RATE_REGISTRY`
+> design described below was later replaced. The archived 2025 tariff periods now
+> live in the library as `RATE_6_2025` / `RATE_8_2025` (`RatePlan` objects with
+> `effective_to` set), and `cost.py` picks the plan for an interval's date with
+> `dominionsc.get_rate_plan_for_date`. The text below is kept as history.
+
 The library does not carry the old (pre-2026-07-01) rate values. The HA
 integration must preserve them internally so that existing historical cost
 statistics can be re-priced correctly when requested.
@@ -317,6 +317,7 @@ that mirrors only the fields needed by cost calculation:
 @dataclass(frozen=True)
 class _HistoricalTieredRate:
     """Internal type for superseded tariff rates not in the library."""
+
     effective_from: date
     effective_to: date
     summer_boundary_wh: float
@@ -460,6 +461,7 @@ only on its time and season:
 from dominionsc import TimeOfUseCharge, Season
 from datetime import timezone
 
+
 def _calculate_tou_cost(
     interval_wh: float,
     interval_dt: datetime,
@@ -512,8 +514,7 @@ if rate_plan is not None:
     if interval_dt.date() < rate_plan.effective_from:
         return 0.0
     if _rate_plan_is_tiered(rate_plan):
-        return _calculate_tiered_cost(interval_wh, interval_dt,
-                                      cumulative_wh_before, rate_plan)
+        return _calculate_tiered_cost(interval_wh, interval_dt, cumulative_wh_before, rate_plan)
     if _rate_plan_is_tou(rate_plan):
         return _calculate_tou_cost(interval_wh, interval_dt, rate_plan)
 ```
@@ -523,10 +524,13 @@ Helper predicates:
 ```python
 def _rate_plan_is_tiered(rate_plan: RatePlan) -> bool:
     from dominionsc import TieredUsageCharge
+
     return any(isinstance(c, TieredUsageCharge) for c in rate_plan.charges)
+
 
 def _rate_plan_is_tou(rate_plan: RatePlan) -> bool:
     from dominionsc import TimeOfUseCharge
+
     return any(isinstance(c, TimeOfUseCharge) for c in rate_plan.charges)
 ```
 
@@ -564,8 +568,13 @@ from .const import COST_MODE_RATE_2, COST_MODE_RATE_5, COST_MODE_RATE_7
 
 RATE_PLAN_REGISTRY = {
     mode: get_rate_plan(mode)
-    for mode in (COST_MODE_RATE_2, COST_MODE_RATE_5,
-                 COST_MODE_RATE_6, COST_MODE_RATE_7, COST_MODE_RATE_8)
+    for mode in (
+        COST_MODE_RATE_2,
+        COST_MODE_RATE_5,
+        COST_MODE_RATE_6,
+        COST_MODE_RATE_7,
+        COST_MODE_RATE_8,
+    )
     if get_rate_plan(mode) is not None
 }
 ```
@@ -616,7 +625,7 @@ and Rate 32V (Value).
 - Rate 32S and Rate 32V charge in **$/therm**
 - 1 therm = 100 ft³
 - `FlatUsageCharge.usage_unit == UsageUnit.THERM`
-- Conversion: `cost = (interval_ft3 / 100.0) × price_per_therm`
+- Conversion: `cost = (interval_ft3 / 100.0) x price_per_therm`
 
 ### 4.2 — Update `_calculate_cost_for_wh` to Handle Gas
 
@@ -687,9 +696,7 @@ COST_MODE_RATE_32V = "rate_32v"
 **New `RATE_PLAN_REGISTRY` entries:**
 ```python
 GAS_RATE_PLAN_REGISTRY: dict[str, RatePlan] = {
-    mode: get_rate_plan(mode)
-    for mode in (COST_MODE_RATE_32S, COST_MODE_RATE_32V)
-    if get_rate_plan(mode) is not None
+    mode: get_rate_plan(mode) for mode in (COST_MODE_RATE_32S, COST_MODE_RATE_32V) if get_rate_plan(mode) is not None
 }
 ```
 
@@ -716,7 +723,7 @@ intervals when a gas rate plan is configured.
 **`tests/test_coordinator.py`:**
 ```
 TestGasCostStatistics:
-- Rate 32S: 100 ft³ interval → cost = $2.04149 (1 therm × $2.04149/therm)
+- Rate 32S: 100 ft³ interval → cost = $2.04149 (1 therm x $2.04149/therm)
 - Rate 32V: 100 ft³ interval → cost = $1.91847
 - COST_MODE_NONE for gas → $0.0, no cost statistic emitted
 - Gas cost statistic ID is generated and distinct from electric cost ID
@@ -744,7 +751,7 @@ added in Phase 4 for `_rate_plan_is_flat()` already handles Rate 2 electric:
 
 ```
 Electric flat rate (Rate 2):
-  cost = interval_wh / 1000 × $0.13111
+  cost = interval_wh / 1000 x $0.13111
 ```
 
 No new code needed if Phase 4 is implemented correctly. Verify that the
@@ -758,8 +765,8 @@ the preceding twelve billing periods." The integration cannot enforce this
 
 Add a brief warning in the config flow description for Rate 2 selection:
 ```json
-"rate_2_eligibility_warning": "Rate 2 is available only to customers who 
-have not exceeded 400 kWh in each of the prior 12 billing periods. 
+"rate_2_eligibility_warning": "Rate 2 is available only to customers who
+have not exceeded 400 kWh in each of the prior 12 billing periods.
 Verify eligibility with Dominion before selecting this rate."
 ```
 
@@ -767,7 +774,7 @@ Verify eligibility with Dominion before selecting this rate."
 
 ```
 TestRate2FlatCost:
-- 500 Wh interval → $0.500 × 0.13111 = $0.065555
+- 500 Wh interval → $0.500 x 0.13111 = $0.065555
 - Effective date gate: interval before 2026-07-01 → $0.0
 - Rate 2 appears in RATE_PLAN_REGISTRY
 - build_cost_mode_choices() includes Rate 2 label

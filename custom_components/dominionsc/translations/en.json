@@ -31,7 +31,7 @@
         "data_description": {
           "cost_mode": "Your rate schedule number is printed on your Dominion Energy bill"
         },
-        "description": "Select how energy costs are calculated. Your rate schedule number is printed on your Dominion Energy bill. If unsure, Rate 8 is the most common residential rate.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.",
+        "description": "Select how energy costs are calculated. Your rate schedule number is printed on your Dominion Energy bill. If unsure, Rate 8 is the most common residential rate.\n\n**Rate 1 note:** Rate 1 (Good Cents) is closed to new customers and is available only to dwellings already certified under the Good Cents program.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.",
         "title": "Cost Calculation Settings"
       },
       "cost_mode_fixed_rate": {
@@ -158,7 +158,7 @@
           "gas_cost_mode": "Rate schedule used to calculate gas costs",
           "pilot_id": "Leave at the default unless Dominion support tells you your account routes to a different Bidgely data pipeline. Changing this reloads the integration."
         },
-        "description": "Select how energy costs are calculated.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.\n\n**Note:** Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics.",
+        "description": "Select how energy costs are calculated.\n\n**Rate 1 note:** Rate 1 (Good Cents) is closed to new customers and is available only to dwellings already certified under the Good Cents program.\n\n**Rate 2 note:** Rate 2 is available only to customers who have not exceeded 400 kWh in each of the prior 12 billing periods. Verify eligibility with Dominion before selecting this rate.\n\n**Rate 7 note:** Only the time-of-use energy portion is calculated. The monthly demand charge cannot be determined from interval data.\n\n**Note:** Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics.",
         "title": "Cost Calculation Settings"
       },
       "recalculate_date_range": {

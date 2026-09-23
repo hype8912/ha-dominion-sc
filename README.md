@@ -18,6 +18,7 @@ A Home Assistant custom integration for Dominion Energy South Carolina customers
   - South Carolina Rate Schedule 5 (Time of Use)
   - South Carolina Rate Schedule 7 (Time-of-Use Demand — energy portion only)
   - South Carolina Rate Schedule 2 (Low Use Residential Service — flat rate)
+  - South Carolina Rate Schedule 1 (Good Cents Residential Service — tiered; closed to new customers)
   - South Carolina Rate Schedule 32S and 32V (Gas Standard / Gas Value)
   - Fixed rate pricing (custom $/kWh)
 - **Multiple Energy Sources**: Support for both electric and gas services at the same service address
@@ -36,7 +37,7 @@ This integration requires **Home Assistant 2025.6.3 or newer**. Check your versi
 
 TFA is **supported but not required**. If your Dominion account has TFA enabled, the integration will prompt you to complete it during setup. If your account does not have TFA, setup proceeds directly after entering your credentials.
 
-If you do have TFA enabled: **Recommended**: Use SMS (text message) verification — it is the most reliable method with this integration.
+If you do have TFA enabled, **SMS (text message) verification is recommended** because it is the most reliable method with this integration.
 
 ### 3. Know your rate schedule
 
@@ -90,6 +91,7 @@ If you don't know your rate, selecting **Rate 8** (Residential Service) is the m
 4. Enter your Dominion Energy SC online account credentials:
    - **Username**: The email address or username you use to log in at dominionenergy.com
    - **Password**: Your dominionenergy.com account password
+   - **Bidgely pilot ID (advanced)**: Leave at the default unless Dominion support tells you your account routes to a different Bidgely data pipeline
 5. Complete two-factor authentication when prompted:
    - If your account has multiple TFA methods, you will be asked to choose one
    - Enter the code sent to you
@@ -106,6 +108,7 @@ If you don't know your rate, selecting **Rate 8** (Residential Service) is the m
    | Rate 5 | Time of Use (TOU) |
    | Rate 7 | Time-of-Use Demand (TOU energy portion only; demand charge not tracked) |
    | Rate 2 | Low Use Residential Service (flat rate; requires ≤ 400 kWh/month — verify eligibility with Dominion) |
+   | Rate 1 | Good Cents Residential Service (tiered; closed to new customers — existing certified dwellings only) |
    | Fixed Rate | Enter a custom $/kWh rate |
 8. If a **gas account** is detected on your service address, you will also be asked to choose a gas cost tracking preference:
    | Option | Description |
@@ -123,7 +126,11 @@ If you don't know your rate, selecting **Rate 8** (Residential Service) is the m
 
 ### Changing Cost Settings After Setup
 
-Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → **Configure**. When switching between rate schedules, you will be offered the option to recalculate historical cost statistics over a date range you choose using the new rate.
+Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → **Configure**. When switching between rate schedules (electric) or enabling a gas rate plan, you will be offered the option to recalculate historical cost statistics over a date range you choose using the new rate — electric and gas are recalculated independently, so this works whether you're changing one, the other, or both at once.
+
+The same screen also lets you change the **Bidgely pilot ID (advanced)**. Changing it reloads the integration.
+
+The date-range picker defaults its start date to the earliest consumption data available for whatever you're recalculating, so accepting the default reprices your full history. If you only want to reprice part of your history, adjust the start date.
 
 ### Configuration Parameters Reference
 
@@ -131,6 +138,7 @@ Go to **Settings** → **Devices & Services** → **Dominion Energy SC** → **C
 |-----------|-------------|----------|---------|
 | Username | dominionenergy.com login email/username | Yes | — |
 | Password | dominionenergy.com account password | Yes | — |
+| Bidgely Pilot ID | Advanced: Bidgely data pipeline identifier; change only if Dominion support tells you to | No | Library default |
 | Extended Backfill | Load up to 365 days of historical consumption | No | Off |
 | Extended Cost Backfill | Calculate cost for the extended range | No | Off |
 | Cost Mode | Electric cost calculation rate schedule | No | Rate 8 |
@@ -250,7 +258,7 @@ Each Dominion Energy SC account can only be added once. If you need to reconfigu
 
 ### Cost statistics show $0 for historical data
 
-Rate schedules have an effective date (currently 2026-07-01 for all SC rates). Cost will show $0.00 for any intervals before that date if you chose extended backfill. This is expected — the integration only calculates costs from the date your chosen rate became effective.
+Each rate schedule only has pricing from the date its rates became effective. Rate 6 and Rate 8 also include the prior tariff that was in effect from 2025-07-23 through 2026-06-30. All other schedules start on 2026-07-01. Cost shows $0.00 for any interval before the earliest known rates for your schedule (for example, before 2025-07-23 for Rate 8, or before 2026-07-01 for Rate 5). This is expected, and it only affects extended backfill or recalculated history.
 
 ### Energy Dashboard shows gaps or missing history
 
@@ -262,7 +270,7 @@ If you see a gap that starts on a specific date, your account's data was not ava
 
 - **Data Delay**: Energy usage data is reported by Dominion Energy SC with a 24–48 hour delay. Real-time monitoring is not available.
 - **Single Service Address**: Only one service address per Dominion Energy SC account is supported. Multiple service addresses may be added in a future release.
-- **No Solar/Grid Export**: Energy returned to the grid from solar panels is not yet supported.
+- **Solar / Net Metering**: If your electric account has two meter registers (grid delivery and solar export), each register is recorded as its own statistic with the last six digits of the meter ID in its name. Dominion does not reliably report which register is import and which is export, so you must identify them yourself when adding them to the Energy Dashboard. Registers are detected only when the account is first set up.
 - **Cost Estimates**: Calculations are estimates based on the selected rate schedule. Actual bills may differ, particularly for historical data where billing-cycle boundaries must be estimated.
 - **Fixed Charges Not Included**: Daily and monthly fixed charges (Basic Facilities Charge, DER Program charge) are not included in cost statistics. Only energy usage charges are calculated.
 - **Rate 7 Demand Charge**: For Rate 7 (Time-of-Use Demand), only the time-of-use energy portion is tracked. The monthly on-peak billing demand charge cannot be determined from interval data.
@@ -270,13 +278,14 @@ If you see a gap that starts on a specific date, your account's data was not ava
 
 ### Supported Rate Schedules
 
-| Rate | Description | Type | Effective Date |
+| Rate | Description | Type | Pricing Effective From |
 |------|-------------|------|----------------|
+| Rate 1 | Good Cents Residential Service | Tiered electric (closed to new customers) | 2026-07-01 |
 | Rate 2 | Low Use Residential Service | Flat electric | 2026-07-01 |
 | Rate 5 | Time of Use | TOU electric | 2026-07-01 |
-| Rate 6 | Energy Saver/Conservation | Tiered electric | 2026-07-01 |
+| Rate 6 | Energy Saver/Conservation | Tiered electric | 2026-07-01 (prior rates from 2025-07-23) |
 | Rate 7 | Time-of-Use Demand | TOU electric (energy only; demand charge not tracked) | 2026-07-01 |
-| Rate 8 | Residential Service | Tiered electric | 2026-07-01 |
+| Rate 8 | Residential Service | Tiered electric | 2026-07-01 (prior rates from 2025-07-23) |
 | Rate 32S | Gas Standard Service | Flat gas | 2026-07-01 |
 | Rate 32V | Gas Value Service | Flat gas | 2026-07-01 |
 | Fixed Rate | Custom $/kWh | Flat electric | n/a |

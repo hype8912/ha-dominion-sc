@@ -5,11 +5,11 @@
 which includes the AI-generated 100%-coverage test suite).
 **Test baseline:** 143 tests passing, **100% line and branch coverage**
 across all modules, verified 2026-09-08.
-**Current:** 163 tests passing (+20 for Phase 5), 100% coverage maintained
+**At completion:** 163 tests passing (+20 for Phase 5), 100% coverage maintained
 across all 11 modules. `coordinator.py` net change: 391 → 330 statements even
 after Phase 5 added real feature code (330 vs. 298 post-Phase-3, since Phase 5
 is new functionality, not pure extraction).
-**Companion doc:** `docs/architecture.md` describes the integration as-is.
+**Companion doc:** [DEVELOPER.md](DEVELOPER.md) describes the integration as-is.
 
 ---
 

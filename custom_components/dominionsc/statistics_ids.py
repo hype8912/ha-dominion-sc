@@ -36,7 +36,7 @@ from .const import DOMAIN, clean_service_addr
 def _build_statistic_ids(
     service_addr_account_no: str,
     account: str,
-) -> tuple[str, str | None, Template]:
+) -> tuple[str, str, Template]:
     """
     Construct the legacy (merged-register) statistic IDs for an account.
 
@@ -76,8 +76,8 @@ def _build_statistic_ids(
           ``name_prefix.substitute(stat_type="cost")``.
 
     """
-    clean_addr = clean_service_addr(service_addr_account_no)
-    id_prefix = (f"{clean_addr}_{account}").lower().replace("-", "_")
+    clean_addr: str = clean_service_addr(service_addr_account_no)
+    id_prefix: str = (f"{clean_addr}_{account}").lower().replace("-", "_")
     consumption_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
     # Cost IDs are generated for both ELECTRIC and GAS accounts so that gas cost
     # statistics can be written when a gas rate plan is selected. The coordinator
@@ -93,7 +93,7 @@ def _build_register_statistic_ids(
     account: str,
     usage_point_id: str,
     is_sole_register: bool,
-) -> tuple[str, str | None, Template]:
+) -> tuple[str, str, Template]:
     """
     Construct statistic IDs for a single physical meter register (Phase 5).
 
@@ -150,9 +150,9 @@ def _build_register_statistic_ids(
         return _build_statistic_ids(service_addr_account_no, account)
 
     # Multi-register path: embed the usage_point_id to distinguish registers.
-    clean_addr = clean_service_addr(service_addr_account_no)
-    safe_up = usage_point_id.lower().replace("-", "_")
-    id_prefix = (f"{clean_addr}_{account}_{safe_up}").lower().replace("-", "_")
+    clean_addr: str = clean_service_addr(service_addr_account_no)
+    safe_up: str = usage_point_id.lower().replace("-", "_")
+    id_prefix: str = (f"{clean_addr}_{account}_{safe_up}").lower().replace("-", "_")
     consumption_id = f"{DOMAIN}:{id_prefix}_energy_consumption"
     cost_id = f"{DOMAIN}:{id_prefix}_energy_cost"
 
@@ -160,7 +160,5 @@ def _build_register_statistic_ids(
     # enough for a user to match it to a physical meter label while keeping the
     # name concise.
     short_up = usage_point_id[-6:]
-    name_prefix = Template(
-        f"{account.title()} $stat_type {service_addr_account_no} (meter {short_up})"
-    )
+    name_prefix = Template(f"{account.title()} $stat_type {service_addr_account_no} (meter {short_up})")
     return consumption_id, cost_id, name_prefix
